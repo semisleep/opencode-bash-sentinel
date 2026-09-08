@@ -29,7 +29,7 @@ The plugin enforces one principle over every bash command, external-directory re
 | **Recognized write** | runs silently | **you get the native approval dialog** |
 | **Unknown/unmodeled** | **you get the native approval dialog** | **you get the native approval dialog** |
 
-"Workspace" is your project directory (git worktree when available). Writes to `.git`, workspace/home/system root targets (`rm -rf ./` on the workspace itself, `~`, `/`), and unresolvable targets (`rm $TARGET`) always escalate — fail-safe.
+"Workspace" is your project directory (git worktree when available). Direct path writes to `.git`, removal or destructive metadata operations on the workspace root (`rm -rf ./`, `chmod 000 .`, `touch .`), writes outside the workspace including `~` and `/`, and unresolvable write targets (`rm $TARGET`) always escalate — fail-safe. Trusted local Git subcommands are the deliberate exception: Git may maintain its own `.git` data internally.
 
 On top of the path policy, the ported Kimi dangerous-command rules still apply everywhere: `sudo`/`env`/`sh -c`/`busybox` wrappers are unwrapped recursively, and `shutdown`/`mkfs*`/`dd`-to-raw-devices and friends escalate regardless of path. The positive trust pass then rejects anything that was not explicitly recognized, including literal but unknown command names.
 
@@ -38,14 +38,14 @@ On top of the path policy, the ported Kimi dangerous-command rules still apply e
 - Any write outside the workspace: `rm ~/.zshrc`, `sed -i s/a/b/ /etc/hosts`, `echo x > /tmp/out`, `sudo cp proj /usr/local/bin/x`, `env mv proj /tmp/`, `sudo chmod`/`chown`/`mkdir`/`touch` on external paths, `tee /tmp/log`, `rsync src/ /backup/`, `install`, `ln`, `truncate`, `shred`, `dd of=/tmp/img`
 - Mutating `git` on another repository: `git -C /elsewhere checkout`, `git --git-dir=...` (read-only subcommands like `git -C /elsewhere log` stay silent)
 - Redirects (`>`, `>>`, `2>`, `&>`) whose target is outside the workspace, unresolvable (`> $OUT`), or inside `.git`
-- Escape hatches: `find ... -delete` / `-exec`, `xargs rm`, command wrappers (`time rm x`, `timeout 10 rm x`, `watch ...`), inline-code interpreters (`python -c`, `node -e`, `ruby -e`, `php -r`, any `osascript`), pipe-executed shells (`curl ... | sh`), scripts from outside the workspace (`python /tmp/x.py`, `bash /tmp/x.sh`, `source /tmp/env`, heredoc/stdin scripts), remote execution (`ssh host cmd`, `scp`), and `awk` programs using `system()` or file redirection
+- Escape hatches: `find ... -delete` / `-exec`, write-capable or option-sensitive `xargs` payloads (`xargs rm`, `xargs file --compile`), command wrappers (`time rm x`, `timeout 10 rm x`, `watch ...`), inline-code interpreters (`python -c`, `node -e`, `ruby -e`, `php -r`, any `osascript`), pipe-executed shells (`curl ... | sh`), scripts from outside the workspace even after interpreter value options (`python -W ignore /tmp/x.py`, `bash -O extglob /tmp/x.sh`, `node --require local-helper /tmp/x.js`), bare interpreters that can read code from stdin (`python`, `bash -O extglob`), `source /tmp/env`, heredoc/stdin scripts, remote execution (`ssh host cmd`, `scp`), and `awk` programs using `system()` or file redirection
 - `cd` outside the workspace followed by a relative write (`cd /tmp && echo x > f`)
-- Sensitive environment assignments that can redirect execution or storage (`GIT_DIR`, `GIT_WORK_TREE`, `HOME`, `PATH`, `BASH_ENV`, `LD_PRELOAD`, ...)
+- Sensitive environment assignments or shell-variable mutations that can redirect execution or storage (`GIT_DIR`, `GIT_WORK_TREE`, `HOME`, `PATH`, `BASH_ENV`, `LD_PRELOAD`, `printf -v PATH ...`, ...)
 - External-directory requests from commands whose path effects are not explicitly modeled (`curl -o`, `tar -C`, custom CLIs, package managers, ...)
 - Unknown commands and executable lookalikes outside the workspace (`custom-cli`, `/tmp/ls`), unrecognized `git` subcommands and remote operations such as `git push`, and environment-prefixed commands whose behavior cannot be proven (`FOO=bar tool`)
-- Command-specific output/escape channels such as `find -fprint /tmp/out`, remote `rsync`, `rsync --log-file=/tmp/log`, sed `e`/`w` programs, `rg --pre`, `file --compile`, and `install --strip-program`
-- Catastrophic targets even inside the workspace: the workspace root itself, `~`, `/`, and `.git` paths
-- The upstream Kimi dangerous list: `sudo rm -rf ...`, `shutdown`, `reboot`, `mkfs*`, `init 0/6`, `systemctl poweroff`, `dd of=/dev/sda`, ...
+- Command-specific output/escape channels such as `find -fprint /tmp/out`, remote `rsync`, `rsync --log-file=/tmp/log`, sed `e`/`w` programs, `rg --pre`, `file --compile`, opaque interpreter preloads (`node --require package server.js`), external Ruby/Perl `-I` search paths, `install --strip-program`, and any external target among the multiple operands of `install -d`
+- Catastrophic targets: workspace-root removal/destructive metadata operations, writes to `~` or `/`, and direct `.git` path writes
+- The upstream Kimi dangerous list: `sudo rm -rf ...`, `shutdown`, `reboot`, `mkfs*`, `init 0/6`, `systemctl poweroff`, `dd of=/dev/sda`, ... The path-aware workspace rule deliberately overrides Kimi's path-blind `rm -rf` match only when every target is a verified workspace subpath, including through recognized wrappers.
 
 ## What runs silently (examples)
 
@@ -60,6 +60,8 @@ This plugin is a permission heuristic, not a sandbox or a proof of a process's e
 Two deliberate exceptions remain. First, workspace scripts and executables such as `python script.py`, `bash scripts/build.sh`, and `./scripts/check` are trusted without inspecting their contents. Second, a finite allowlist of common development tools (`npm`, `pnpm`, `yarn`, `bun`, `make`, `cargo`, `go`, test/format/lint tools, and similar entries in the source policy) is trusted without inspecting project hooks or configuration. Such code can still write outside the workspace, delete files, access credentials, or use the network internally. These are explicit trust boundaries, not analyzer proofs; use OS/container sandboxing when the workspace is not trusted.
 
 Workspace containment is currently lexical. A workspace path that traverses a symlink to an external target is still treated as inside the workspace. This is the other known containment limitation and is not resolved by the default-deny command policy.
+
+Bare allowlisted command names are trusted by name; the plugin does not resolve the ambient `PATH` or prove which binary the shell will launch. Assigning a sensitive variable such as `PATH` in the submitted command is detected, but a pre-existing modified environment is outside the command-line analysis. Use a controlled environment or sandbox when executable provenance matters.
 
 ## Installation
 

@@ -217,6 +217,26 @@ const XARGS_VALUE_OPTIONS = new Set([
   '--replace',
 ])
 
+// xargs appends data-derived operands after the static command line. Most
+// read-only commands remain read-only under extra operands, but `file` can
+// reinterpret an appended `--compile` as a write/exec-capable option.
+const XARGS_APPEND_SAFE_COMMANDS = new Set(
+  Array.from(READ_ONLY_COMMANDS).filter((command) => command !== 'file'),
+)
+
+// These operations can destroy the workspace root or mutate its metadata.
+// Content-producing commands such as cp/install/rsync may still target `.`:
+// their effect is to create entries inside the workspace, not replace it.
+const WORKSPACE_ROOT_FORBIDDEN_WRITES = new Set([
+  'chmod',
+  'chown',
+  'install -d',
+  'rmdir',
+  'shred',
+  'touch',
+  'truncate',
+])
+
 const INLINE_CODE_INTERPRETERS: Readonly<Record<string, readonly (string | RegExp)[]>> = {
   python: ['-c', /^-c.+/],
   python3: ['-c', /^-c.+/],
@@ -226,18 +246,105 @@ const INLINE_CODE_INTERPRETERS: Readonly<Record<string, readonly (string | RegEx
   php: ['-r', /^-[a-zA-Z]*r(?:.+)?$/],
 }
 
-// interpreters that execute a script file: the first positional operand is
-// the script; running one from outside the workspace (or unresolvable, or
-// stdin/heredoc) escalates
-const SCRIPT_EXECUTORS: Readonly<Record<string, ReadonlySet<string>>> = {
-  python: new Set(['-m']),
-  python3: new Set(['-m']),
-  node: new Set(),
-  ruby: new Set(),
-  perl: new Set(),
-  php: new Set(),
-  source: new Set(),
-  '.': new Set(),
+interface ScriptExecutorRule {
+  /** Options that consume the following token while locating the main script. */
+  readonly valueOptions: ReadonlySet<string>
+  /** Leading options whose command-line effects are understood. */
+  readonly safeOptions: readonly (string | RegExp)[]
+  /** Options whose value names another file/module that may execute code. */
+  readonly loadedPathOptions?: ReadonlySet<string>
+  /** Preload options that accept either an explicit path or an opaque module name. */
+  readonly moduleLoadOptions?: ReadonlySet<string>
+  /** Options that add one or more directories to an interpreter's code search path. */
+  readonly searchPathOptions?: ReadonlySet<string>
+  /** Options whose value is the main script rather than a normal option value. */
+  readonly scriptPathOptions?: ReadonlySet<string>
+  /** Recognized value options whose effects are intentionally not auto-approved. */
+  readonly unsafeOptions?: ReadonlySet<string>
+  /** Options such as Python -m whose value is the execution target, not a file. */
+  readonly nonFileTargetOptions?: ReadonlySet<string>
+  /** Options that safely terminate or discover workspace inputs without a file. */
+  readonly optionalScriptOptions?: ReadonlySet<string>
+  /** Commands such as source simply fail when their required operand is absent. */
+  readonly allowMissingScript?: boolean
+}
+
+// Unknown interpreter options fail closed. This prevents a value consumed by
+// the interpreter from being mistaken for the main script and hiding a later
+// external script operand.
+const SCRIPT_EXECUTORS: Readonly<Record<string, ScriptExecutorRule>> = {
+  python: {
+    valueOptions: new Set(['-m', '-W', '-X', '--check-hash-based-pycs']),
+    safeOptions: [
+      /^-[bBdEhiIOPqRsSuvV]+$/,
+      /^-O{1,2}$/,
+      /^-W.+/,
+      '--bytes-warning', '--help', '--ignore-environment', '--isolated', '--no-site', '--no-user-site',
+      '--optimize', '--quiet', '--unbuffered', '--verbose', '--version',
+    ],
+    unsafeOptions: new Set(['-X']),
+    nonFileTargetOptions: new Set(['-m']),
+    optionalScriptOptions: new Set(['--help', '--version']),
+  },
+  python3: {
+    valueOptions: new Set(['-m', '-W', '-X', '--check-hash-based-pycs']),
+    safeOptions: [
+      /^-[bBdEhiIOPqRsSuvV]+$/,
+      /^-O{1,2}$/,
+      /^-W.+/,
+      '--bytes-warning', '--help', '--ignore-environment', '--isolated', '--no-site', '--no-user-site',
+      '--optimize', '--quiet', '--unbuffered', '--verbose', '--version',
+    ],
+    unsafeOptions: new Set(['-X']),
+    nonFileTargetOptions: new Set(['-m']),
+    optionalScriptOptions: new Set(['--help', '--version']),
+  },
+  node: {
+    valueOptions: new Set([
+      '-r', '--require', '--import', '--loader', '--experimental-loader', '--input-type', '--conditions',
+    ]),
+    safeOptions: [
+      /^-[hv]+$/,
+      '--check', '--help', '--no-warnings', '--test', '--test-only', '--version', '--watch',
+      /^--(?:conditions|input-type)=/,
+      /^--(?:experimental-loader|import|loader|require)=/,
+      /^-r.+/,
+    ],
+    moduleLoadOptions: new Set(['-r', '--require', '--import', '--loader', '--experimental-loader']),
+    optionalScriptOptions: new Set(['--help', '--test', '--version']),
+  },
+  ruby: {
+    valueOptions: new Set(['-C', '-E', '-F', '-I', '-K', '-r', '--chdir', '--encoding', '--require']),
+    safeOptions: [/^-[acdhlnpsvwy]+$/, /^-[EIFKIr].+/, '--copyright', '--disable', '--enable', '--version'],
+    moduleLoadOptions: new Set(['-r', '--require']),
+    searchPathOptions: new Set(['-I']),
+    unsafeOptions: new Set(['-C', '--chdir']),
+    optionalScriptOptions: new Set(['--copyright', '--version']),
+  },
+  perl: {
+    valueOptions: new Set(['-0', '-F', '-I', '-x']),
+    safeOptions: [/^-[acdhnpsTtuUvVwW]+$/, /^-[0FI].+/, '--help', '--version'],
+    unsafeOptions: new Set(['-x']),
+    searchPathOptions: new Set(['-I']),
+    optionalScriptOptions: new Set(['--help', '--version']),
+  },
+  php: {
+    valueOptions: new Set(['-c', '-d', '-f', '--file']),
+    safeOptions: [/^-[ahnqsvw]+$/, /^-c.+/, /^-d.+/, '--file', '--help', '--info', '--no-php-ini', '--version'],
+    loadedPathOptions: new Set(['-c']),
+    scriptPathOptions: new Set(['-f', '--file']),
+    unsafeOptions: new Set(['-d']),
+    optionalScriptOptions: new Set(['--help', '--info', '--version']),
+  },
+  source: { valueOptions: new Set(), safeOptions: [], allowMissingScript: true },
+  '.': { valueOptions: new Set(), safeOptions: [], allowMissingScript: true },
+}
+
+const SHELL_SCRIPT_OPTIONS: ScriptExecutorRule = {
+  valueOptions: new Set(['-O', '+O', '-o', '--rcfile', '--init-file']),
+  safeOptions: [/^[-+][a-zA-Z]+$/, '--noprofile', '--norc', '--posix', '--restricted', '--verbose', '--version'],
+  loadedPathOptions: new Set(['--rcfile', '--init-file']),
+  optionalScriptOptions: new Set(['--version']),
 }
 
 const MODELED_BASH_COMMANDS = new Set([
@@ -693,15 +800,8 @@ function checkInvocation(
       fail(state, 'shell executes script from stdin (-s)')
       return
     }
-    const operands = positionalArgs(args, new Set())
-    // `curl ... | sh`, `bash < script.sh`, `bash <<EOF`: a shell with no -c
-    // payload and no script operand executes whatever arrives on stdin
-    if (operands.length === 0) {
-      fail(state, 'shell executes script from stdin (pipe/heredoc)')
-      return
-    }
     state.externalEffectsModeled = false
-    checkScriptOperand(args, new Set(), dropped, ctx, state, name)
+    checkScriptOperand(args, SHELL_SCRIPT_OPTIONS, dropped, ctx, state, name)
     return
   }
   if (name === 'eval') {
@@ -716,6 +816,11 @@ function checkInvocation(
 
   if (name === 'export' || name === 'declare' || name === 'typeset' || name === 'readonly') {
     checkSensitiveAssignmentArgs(args, state)
+  }
+
+  if (name === 'printf' && args.some((arg) => arg === '-v' || /^-v.+/.test(arg))) {
+    fail(state, 'printf -v mutates a shell variable')
+    return
   }
 
   if (dropped && WRITE_COMMANDS.has(name)) {
@@ -742,6 +847,12 @@ function checkInvocation(
       )
     ) {
       fail(state, 'install --strip-program executes an external command')
+      return
+    }
+    if (name === 'install' && args.some((arg) => arg === '--directory' || /^-[^-]*d/.test(arg))) {
+      for (const target of positionalArgsAnywhere(args, INSTALL_VALUE_OPTIONS)) {
+        checkWriteTarget(target, ctx, state, 'install -d')
+      }
       return
     }
     checkCopyMove(args, valueOptions, ctx, state, name)
@@ -835,7 +946,10 @@ function checkInvocation(
       const executableTrust = classifyExecutable(executable, ctx, state.cwds)
       if (executableTrust === 'workspace') {
         state.externalEffectsModeled = false
-      } else if (executableTrust === 'untrusted-path' || !READ_ONLY_COMMANDS.has(normalizeCommandName(executable))) {
+      } else if (
+        executableTrust === 'untrusted-path' ||
+        !XARGS_APPEND_SAFE_COMMANDS.has(normalizeCommandName(executable))
+      ) {
         state.commandTrusted = false
       }
     }
@@ -882,16 +996,23 @@ function checkInvocation(
       fail(state, `${name} executes script from heredoc`)
       return
     }
-    checkScriptOperand(args, SCRIPT_EXECUTORS[name] ?? new Set(), dropped, ctx, state, name)
+    checkScriptOperand(
+      args,
+      SCRIPT_EXECUTORS[name] ?? { valueOptions: new Set(), safeOptions: [] },
+      dropped,
+      ctx,
+      state,
+      name,
+    )
     return
   }
-  const scriptValueOptions = SCRIPT_EXECUTORS[name]
-  if (scriptValueOptions !== undefined) {
+  const scriptRule = SCRIPT_EXECUTORS[name]
+  if (scriptRule !== undefined) {
     if (invocation.hasHeredoc) {
       fail(state, `${name} executes script from heredoc`)
       return
     }
-    checkScriptOperand(args, scriptValueOptions, dropped, ctx, state, name)
+    checkScriptOperand(args, scriptRule, dropped, ctx, state, name)
     return
   }
   const remoteValueOptions = REMOTE_COMMANDS[name]
@@ -1177,6 +1298,10 @@ function checkWriteTarget(raw: string, ctx: WorkspaceContext, state: State, comm
       fail(state, `${command}: write outside workspace`)
       return
     }
+    if (absolute === path.normalize(ctx.workspace) && WORKSPACE_ROOT_FORBIDDEN_WRITES.has(command)) {
+      fail(state, `${command}: workspace root target`)
+      return
+    }
   }
   if (!path.isAbsolute(resolved)) state.relativeWrite = true
 }
@@ -1308,7 +1433,7 @@ function commandInvocationLoose(
 
 function checkScriptOperand(
   args: readonly string[],
-  valueOptions: ReadonlySet<string>,
+  rule: ScriptExecutorRule,
   dropped: boolean,
   ctx: WorkspaceContext,
   state: State,
@@ -1318,11 +1443,89 @@ function checkScriptOperand(
     fail(state, `${name}: script from stdin`)
     return
   }
-  if (args.length === 0 && dropped) {
-    fail(state, `${name}: unresolvable script operand`)
+  const optionResult = checkInterpreterOptions(args, rule, ctx, state, name)
+  const script =
+    optionResult.explicitScript ??
+    (optionResult.hasNonFileTarget ? undefined : positionalArgs(args, rule.valueOptions)[0])
+  if (
+    script === undefined &&
+    !optionResult.hasNonFileTarget &&
+    !optionResult.mayOmitScript &&
+    rule.allowMissingScript !== true
+  ) {
+    fail(state, dropped ? `${name}: unresolvable script operand` : `${name}: script from stdin`)
     return
   }
-  checkScriptPath(positionalArgs(args, valueOptions)[0], ctx, state, name)
+  checkScriptPath(script, ctx, state, name)
+}
+
+function checkInterpreterOptions(
+  args: readonly string[],
+  rule: ScriptExecutorRule,
+  ctx: WorkspaceContext,
+  state: State,
+  command: string,
+): { explicitScript: string | undefined; hasNonFileTarget: boolean; mayOmitScript: boolean } {
+  let explicitScript: string | undefined
+  let hasNonFileTarget = false
+  let mayOmitScript = false
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    if (arg === '--' || arg === '-' || !arg.startsWith('-')) break
+
+    let option = arg
+    let value: string | undefined
+    const equals = arg.indexOf('=')
+    if (equals > 0) {
+      option = arg.slice(0, equals)
+      value = arg.slice(equals + 1)
+    } else {
+      const attached = Array.from(rule.valueOptions).find(
+        (candidate) =>
+          candidate.startsWith('-') &&
+          !candidate.startsWith('--') &&
+          arg.startsWith(candidate) &&
+          arg !== candidate,
+      )
+      if (attached !== undefined) {
+        option = attached
+        value = arg.slice(attached.length)
+      } else if (rule.valueOptions.has(arg)) {
+        value = args[i + 1]
+        i += 1
+      }
+    }
+
+    if (rule.unsafeOptions?.has(option) === true) state.commandTrusted = false
+    if (rule.loadedPathOptions?.has(option) === true) checkScriptPath(value, ctx, state, `${command} ${option}`)
+    if (rule.moduleLoadOptions?.has(option) === true) {
+      checkScriptPath(value, ctx, state, `${command} ${option}`)
+      if (value !== undefined && !isExplicitScriptPath(value)) state.commandTrusted = false
+    }
+    if (rule.searchPathOptions?.has(option) === true && value !== undefined) {
+      for (const entry of value.split(path.delimiter)) {
+        if (entry.length > 0) checkScriptPath(entry, ctx, state, `${command} ${option}`)
+      }
+    }
+    if (rule.scriptPathOptions?.has(option) === true) explicitScript = value
+    if (rule.nonFileTargetOptions?.has(option) === true) hasNonFileTarget = true
+    if (rule.optionalScriptOptions?.has(option) === true) mayOmitScript = true
+
+    const recognized =
+      rule.valueOptions.has(option) ||
+      rule.safeOptions.some((pattern) => (typeof pattern === 'string' ? arg === pattern : pattern.test(arg)))
+    if (!recognized) state.commandTrusted = false
+  }
+  return { explicitScript, hasNonFileTarget, mayOmitScript }
+}
+
+function isExplicitScriptPath(value: string): boolean {
+  return (
+    path.isAbsolute(value) ||
+    value.startsWith('./') ||
+    value.startsWith('../') ||
+    value.startsWith('~/')
+  )
 }
 
 // Like the analyzer's literalText, but keeps `~` (expanded later via homedir)

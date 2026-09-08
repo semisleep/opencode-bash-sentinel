@@ -127,6 +127,9 @@ describe("command wrappers (time/timeout/watch) and pipe-executed shells", () =>
 
 describe("external script execution", () => {
   it("scripts outside the workspace or unresolvable escalate", () => {
+    dangerous("python")
+    dangerous("node")
+    dangerous("bash -O extglob")
     dangerous("python /tmp/evil.py")
     dangerous("python3 /tmp/x.py")
     dangerous("node /tmp/x.js")
@@ -148,6 +151,31 @@ describe("external script execution", () => {
     safe("source .env")
     safe("source venv/bin/activate")
     safe(`python ${WS}/tool/run.py`)
+  })
+
+  it("interpreter option values cannot hide a later external script", () => {
+    dangerous("python -W ignore /tmp/evil.py")
+    dangerous("python -X dev /tmp/evil.py")
+    dangerous("bash -O extglob /tmp/evil.sh")
+    dangerous("ruby -I lib /tmp/evil.rb")
+    dangerous("perl -I lib /tmp/evil.pl")
+    dangerous("php -d display_errors=1 /tmp/evil.php")
+    dangerous("node --require local-helper /tmp/evil.js")
+    dangerous("node --require /tmp/preload.js server.js")
+    dangerous("ruby -I /tmp script.rb")
+    dangerous("perl -I lib:/tmp script.pl")
+  })
+
+  it("known interpreter options preserve workspace script approval", () => {
+    safe("python -W ignore script.py")
+    safe("bash -O extglob scripts/build.sh")
+    safe("ruby -I lib script.rb")
+    safe("perl -I lib script.pl")
+    safe("python --version")
+    safe("node --test")
+    safe("node --require ./local-helper server.js")
+    untrusted("node --require local-helper server.js")
+    untrusted("node --import=data:text/javascript,evil server.js")
   })
 })
 
@@ -267,6 +295,18 @@ describe("write redirects", () => {
 })
 
 describe("write-command table (external gate blind spots)", () => {
+  it("destructive or metadata writes cannot target the workspace root", () => {
+    dangerous("chmod 000 .")
+    dangerous("chown user .")
+    dangerous("touch .")
+    dangerous("rmdir .")
+    dangerous("truncate -s 0 .")
+    dangerous("shred .")
+    dangerous("install -d .")
+    safe("cp file .")
+    safe("install file .")
+  })
+
   it("sed -i", () => {
     safe("sed -i s/a/b/ file.txt")
     safe(`sed -i.bak s/a/b/ ${WS}/x`)
@@ -306,6 +346,8 @@ describe("write-command table (external gate blind spots)", () => {
     safe("ln -s -t build src/file")
     safe("install -m 755 tool bin/tool")
     dangerous("install -m 755 tool /usr/local/bin/tool")
+    safe("install -d build/cache build/output")
+    dangerous("install -d /tmp/external local-dir")
     safe("ln -s target linkname")
     dangerous("ln -s target /usr/local/bin/link")
   })
@@ -367,6 +409,7 @@ describe("find / xargs escape hatches", () => {
     dangerous("find . | xargs sh -c 'echo $0'")
     safe("git ls-files | xargs cat")
     safe("ls | xargs wc -l")
+    untrusted("printf x | xargs file --compile -m /tmp/magic")
     trusted("command -v totally-unknown-command")
     untrusted("command love")
     untrusted("find . | xargs totally-unknown-command")
@@ -382,6 +425,7 @@ describe("environment-sensitive execution", () => {
     dangerous("env GIT_WORK_TREE=/tmp/tree git checkout .")
     dangerous("export HOME=/tmp/home; git config --global user.name x")
     dangerous("PATH=/tmp/bin tool")
+    dangerous("printf -v PATH /tmp; ls")
   })
 
   it("ordinary local assignments have unknown command semantics", () => {

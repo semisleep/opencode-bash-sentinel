@@ -151,6 +151,11 @@ describe("bash gate", () => {
       "rsync src/ dest/ --log-file=/tmp/log",
       "/tmp/ls -la",
       "FOO=bar echo ok",
+      "python -W ignore /tmp/evil.py",
+      "install -d /tmp/external local-dir",
+      "printf -v PATH /tmp; ls",
+      "printf x | xargs file --compile -m /tmp/magic",
+      "node --require local-helper server.js",
     ]) {
       await emit(hooks, askedEvent({ metadata: { command } }))
     }

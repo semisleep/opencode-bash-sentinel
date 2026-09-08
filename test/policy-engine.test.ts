@@ -36,6 +36,38 @@ describe("positive command policy", () => {
     expect(decide("find . | xargs custom-tool").action).toBe("ask")
     expect(decide("find . -fprint /tmp/out").action).toBe("ask")
     expect(decide("rsync src/ dst/ --log-file=/tmp/log").action).toBe("ask")
+    expect(decide("printf x | xargs file --compile -m /tmp/magic").action).toBe("ask")
+    expect(decide("printf -v PATH /tmp; ls").action).toBe("ask")
+  })
+
+  it("asks when interpreter options previously hid external scripts", () => {
+    for (const command of [
+      "python -W ignore /tmp/evil.py",
+      "python -X dev /tmp/evil.py",
+      "bash -O extglob /tmp/evil.sh",
+      "ruby -I lib /tmp/evil.rb",
+      "perl -I lib /tmp/evil.pl",
+      "php -d display_errors=1 /tmp/evil.php",
+      "node --require local-helper /tmp/evil.js",
+      "python",
+      "bash -O extglob",
+    ]) {
+      expect(decide(command).action).toBe("ask")
+    }
+  })
+
+  it("asks for multi-target and workspace-root mutations", () => {
+    expect(decide("install -d /tmp/external local-dir").action).toBe("ask")
+    expect(decide("chmod 000 .").action).toBe("ask")
+    expect(decide("touch .").action).toBe("ask")
+  })
+
+  it("asks for external search paths and opaque preload modules", () => {
+    expect(decide("ruby -I /tmp script.rb").action).toBe("ask")
+    expect(decide("perl -I lib:/tmp script.pl").action).toBe("ask")
+    expect(decide("node --require local-helper server.js").action).toBe("ask")
+    expect(decide("node --import=data:text/javascript,evil server.js").action).toBe("ask")
+    expect(decide("node --require ./local-helper server.js").action).toBe("allow")
   })
 
   it("requires both external-path coverage and Bash trust", () => {
