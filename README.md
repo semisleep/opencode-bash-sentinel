@@ -19,17 +19,33 @@ OpenCode's built-in bash permissions offer two extremes:
 
 This plugin is the middle ground Kimi Code ships by default: parse the command into a syntax tree, classify it deterministically, auto-approve the provably-safe ones, and stop everything dangerous or opaque at the native dialog. The failure direction is **fail-safe**: risky constructs with un-resolvable operands (variables, globs, command substitution), unknown command names, malformed input, and parser timeouts are escalated to a human, never silently approved.
 
-## What gets escalated to the human
+## How it works
 
-- **Privilege/launch wrappers**: `sudo`, `doas`, `env`, `command`, `exec`, `nohup`, `builtin`, `nice` — unwrapped and the inner command analyzed recursively
-- **Nested shells**: `sh`/`bash`/`zsh -c '...'`, `eval`, `busybox <applet>` — payload analyzed recursively (max depth 4)
-- **Dangerous commands**: `shutdown`, `reboot`, `halt`, `poweroff`, `mkfs*`, `wipefs`, `diskpart`, `format`, `init 0/6`, `systemctl poweroff/reboot/...`, `dd` writing to raw devices (`/dev/sda`, ...; `/dev/null` etc. are allowed), `rm` with both recursive and force flags — **any** `rm -rf`, regardless of target
-- **Opaque input on risky constructs**: when the command itself is one of the above (a wrapper, nested shell, `eval`, `busybox`, `init`, `systemctl`, `dd`, `rm`) and its operands contain variables (`$`), globs (`*?[]`), `~`, or command substitution, it escalates instead of guessing
-- **Un-analyzable command names or shell payloads**: e.g. `$CMD --force`, `bash -c "echo $HOME"`, syntax errors, or parser timeouts
-- Command names are normalized: `/bin/rm` → `rm`, `RM` → `rm`, `rm.exe` → `rm`
-- Pipes (`a | b`) and sequences (`a && b; c`) are fully covered — every segment is analyzed, including commands inside `$(...)` substitutions
+The plugin enforces one principle over every bash command, external-directory request, and file edit:
 
-Everything else (e.g. `git status`, `ls -la`, `rg foo src/`, `npm test`) runs without a keystroke. Note that by upstream design, a **generic** command with variable/glob operands (`cat $FILE`, `ls *.md`) is approved — the fail-safe escalation applies to the risky constructs listed above, and to command names/payloads that cannot be resolved.
+| | Inside your workspace | Outside your workspace |
+|---|---|---|
+| **Read** | runs silently | runs silently |
+| **Write** | runs silently | **you get the native approval dialog** |
+
+"Workspace" is your project directory (git worktree when available). Writes to `.git`, workspace/home/system root targets (`rm -rf ./` on the workspace itself, `~`, `/`), and unresolvable targets (`rm $TARGET`) always escalate — fail-safe.
+
+On top of the path policy, the ported Kimi dangerous-command rules still apply everywhere: `sudo`/`env`/`sh -c`/`busybox` wrappers are unwrapped recursively, `shutdown`/`mkfs*`/`dd`-to-raw-devices and friends escalate regardless of path, and commands the analyzer cannot prove safe (un-literal command names, opaque nested-shell payloads, parser timeouts) escalate instead of guessing.
+
+## What gets escalated (examples)
+
+- Any write outside the workspace: `rm ~/.zshrc`, `sed -i s/a/b/ /etc/hosts`, `echo x > /tmp/out`, `cp proj /usr/local/bin/x`, `tee /tmp/log`, `rsync src/ /backup/`, `install`, `ln`, `truncate`, `shred`, `dd of=/tmp/img`
+- Redirects (`>`, `>>`, `2>`, `&>`) whose target is outside the workspace, unresolvable (`> $OUT`), or inside `.git`
+- Escape hatches: `find ... -delete` / `-exec`, `xargs rm`, inline-code interpreters (`python -c`, `node -e`, `ruby -e`, `php -r`, any `osascript`)
+- `cd` outside the workspace followed by a relative write (`cd /tmp && echo x > f`)
+- Catastrophic targets even inside the workspace: the workspace root itself, `~`, `/`, and `.git` paths
+- The upstream Kimi dangerous list: `sudo rm -rf ...`, `shutdown`, `reboot`, `mkfs*`, `init 0/6`, `systemctl poweroff`, `dd of=/dev/sda`, ...
+
+## What runs silently (examples)
+
+`git status`, `ls -la`, `rg foo src/`, `npm test`, `cat /etc/hosts`, `cd /tmp && ls`, `rm -rf build/`, `echo x > out.txt`, `sed -i s/a/b/ src/file.ts`, edits to any file inside the workspace — no keystrokes.
+
+If the native dialog asks about an external write and you approve it, the follow-up bash permission for the same command is approved automatically (no double-prompting).
 
 ## Installation
 
@@ -42,7 +58,10 @@ Add to your config — a project's `opencode.json`, or the global `~/.config/ope
 ```json
 {
   "plugin": ["/absolute/path/to/opencode-bash-sentinel"],
-  "permission": { "bash": { "*": "ask" } }
+  "permission": {
+    "bash": { "*": "ask" },
+    "edit": { "*": "ask" }
+  }
 }
 ```
 
@@ -51,11 +70,14 @@ Add to your config — a project's `opencode.json`, or the global `~/.config/ope
 ```json
 {
   "plugin": ["opencode-bash-sentinel"],
-  "permission": { "bash": { "*": "ask" } }
+  "permission": {
+    "bash": { "*": "ask" },
+    "edit": { "*": "ask" }
+  }
 }
 ```
 
-The `permission` entry routes every bash command through the approval flow — the plugin then auto-replies to the safe ones in milliseconds (same mechanism OpenCode's own auto mode uses), so you only see a dialog when it matters. Project-level `plugin`/`permission` config merges with the global config.
+The `permission` entries route every bash command and file edit through the approval flow — the plugin then auto-replies to the safe ones in milliseconds (same mechanism OpenCode's own auto mode uses), so you only see a dialog when it matters. `edit` routing is optional but recommended: without it, in-workspace edits follow your normal opencode rules. Project-level `plugin`/`permission` config merges with the global config.
 
 ## Options
 
@@ -69,14 +91,17 @@ The `permission` entry routes every bash command through the approval flow — t
 
 | Option | Default | Description |
 |---|---|---|
-| `audit` | `false` | Append one JSONL line per decision (`timestamp`, `command`, `verdict`, `action`) |
+| `audit` | `false` | Append one JSONL line per decision (`timestamp`, `gate`, `command`, `verdict`, `action`) |
 | `logPath` | `~/.local/share/opencode/bash-sentinel-audit.jsonl` | Where the audit log is written |
+| `upstream` | `false` | Revert to the verbatim Kimi policy (workspace path rules, external-read approval, and the edit gate are all disabled) |
 
 ## Behavior notes
 
 - **`deny` rules always win.** Commands matched by a `deny` rule fail before the plugin is ever consulted.
 - **`"always allow" bypasses the plugin** for the rest of the session. If you answer "always" on a dialog, that pattern is approved without analysis afterwards.
-- **`external_directory` prompts are untouched.** OpenCode separately asks when a command touches directories outside your project; this plugin only handles bash command safety, so such commands may still prompt.
+- **Known blind spots** (fail-open, by pragmatic design): commands that write through channels neither opencode's external-directory scan nor the write-command table sees — e.g. `awk '... > "file"'`, `tar -C`, package managers with `--prefix` — and symlink escapes (a literal path inside the workspace that is a symlink to outside). The audit log exists partly to spot these in practice.
+- **Path comparison is literal and case-sensitive**; macOS case-insensitive filesystems are not modeled.
+- **`pwsh`/`cmd` tools are out of scope** (bash analysis only).
 - **`--auto` mode makes this plugin moot** — in auto mode the TUI already approves everything.
 - Dangerous commands are *escalated*, never blocked: the native dialog still lets you approve them manually.
 

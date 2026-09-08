@@ -63,21 +63,41 @@ All file references are against `.reference/opencode`. These were read from sour
 
 ---
 
-## 3. Design: reverse mapping
+## 3. Design: reverse mapping + workspace path policy
 
 Kimi's semantics: *default-approve everything, escalate dangerous/un-analyzable to ask.* OpenCode plugins can only answer requests already classified `ask`. So we invert the default:
 
 ```
-opencode.json:  "permission": { "bash": { "*": "ask" } }   // every bash command asks
+opencode.json:  "permission": { "bash": {"*": "ask"}, "edit": {"*": "ask"} }
 
-plugin on permission.asked (permission === "bash"):
-    command = properties.metadata.command
-    verdict = analyze(command)            // ported Kimi analyzer
-    verdict === undefined (safe)          → reply "once"   (silent approval)
-    verdict === dangerous | unanalyzable  → do nothing     (native dialog shows to the human)
+plugin on permission.asked:
+    permission === "bash":
+        verdict = workspacePolicy(command) ?? upstreamVerdict(command)
+        safe                                    → reply "once"
+        dangerous | unanalyzable                → do nothing (native dialog)
+    permission === "external_directory":
+        same verdict; safe → reply "once" (external reads become silent),
+        dangerous → remember sessionID+command so the bash follow-up
+        (which only fires after the human approved the dialog) is not
+        asked twice
+    permission === "edit":
+        filepath inside workspace and not .git → reply "once"; else stay silent
 ```
 
-Net effect equals Kimi's default mode: safe commands run without a keystroke; risky or opaque ones stop at the native approval dialog. Non-bash permissions are untouched.
+### Workspace path policy (`src/workspace-policy.ts` — ours, not ported)
+
+Principle: **inside the workspace everything is allowed; outside, reads are allowed and writes require confirmation.** Enforced over the same syntax tree:
+
+- **rm**: positional targets classified as inside / outside / relative / unresolvable. Outside, unresolvable, `.git`, or the workspace/home/system root itself → dangerous. In-workspace rm of subpaths is safe regardless of flags (the upstream `rm -rf` verdict is suppressed via the `rmHandled` flag).
+- **Write-command table** (commands opencode's external-directory scan never sees): `sed -i`, `dd of=`, `rsync`, `install`, `ln`, `tee`, `truncate`, `shred` — target extraction per command, same classification.
+- **Write redirects**: `>`, `>>`, `2>`, `&>`, `<>` targets classified the same way; `/dev/null`, `/dev/stdout`, `/dev/stderr` and fd numbers exempt; unresolvable targets (`> $OUT`) escalate. Note the parser shapes: `2> file` produces a named `file_descriptor` child that must be skipped when finding the target, and `{}` parses as a `concatenation` node.
+- **Escape hatches**: `find -delete/-exec*` and `xargs` whose operands include any write-capable command or shell.
+- **Inline-code interpreters**: `python -c`, `node -e/-p/--eval`, `ruby -e`, `perl -e`, `php -r`, and any `osascript`. Running files / modules stays allowed.
+- **cd-combo**: any `cd`/`pushd` to an outside or unresolvable directory marks the tree; combined with any relative write target → dangerous.
+- Unresolvable operands on write commands (`rm $TARGET`) and un-literal command names escalate (fail-safe).
+- Wrappers (`sudo`/`env`/`nohup`/...), nested shells (`sh -c` payload re-analysis), `eval`, and `busybox` are unwrapped with the same machinery as the upstream analyzer.
+
+`{ upstream: true }` plugin option disables all of this and restores verbatim Kimi behavior.
 
 ### Failure modes
 

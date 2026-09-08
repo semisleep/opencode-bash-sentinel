@@ -1,10 +1,20 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { BashSentinelPlugin } from "../src/plugin"
-import type { Plugin } from "@opencode-ai/plugin"
+import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 
 type FetchMock = ReturnType<typeof vi.fn>
 
-const serverUrl = new URL("http://sentinel-test.local/")
+const WORKSPACE = "/Users/dev/project"
+
+function makeInput(overrides: Partial<Record<keyof PluginInput, unknown>> = {}) {
+  return {
+    client: {},
+    directory: WORKSPACE,
+    worktree: WORKSPACE,
+    serverUrl: new URL("http://sentinel-test.local/"),
+    ...overrides,
+  } as unknown as Parameters<Plugin>[0]
+}
 
 function askedEvent(overrides: Record<string, unknown> = {}) {
   return {
@@ -19,12 +29,7 @@ function askedEvent(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function makeInput(client: unknown = {}) {
-  return { client, serverUrl } as Parameters<Plugin>[0]
-}
-
-async function emit(plugin: Plugin, event: unknown) {
-  const hooks = await plugin(makeInput(), undefined)
+async function emit(hooks: Awaited<ReturnType<Plugin>>, event: unknown) {
   await hooks.event!({ event } as never)
 }
 
@@ -38,127 +43,194 @@ function notFound() {
   return { ok: false, status: 404 } as Response
 }
 
+beforeEach(() => {
+  fetchMock = vi.fn().mockResolvedValue(ok())
+  vi.stubGlobal("fetch", fetchMock)
+})
+
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   vi.restoreAllMocks()
 })
 
-describe("approval decisions", () => {
-  it("safe command replies once via the dedicated permission route", async () => {
-    fetchMock = vi.fn().mockResolvedValue(ok())
-    vi.stubGlobal("fetch", fetchMock)
+describe("bash gate", () => {
+  it("safe command is approved via the legacy SDK route", async () => {
+    const legacyReply = vi.fn().mockResolvedValue({ error: undefined })
+    const hooks = await BashSentinelPlugin(
+      makeInput({ client: { postSessionIdPermissionsPermissionId: legacyReply } }),
+      undefined,
+    )
+    await emit(hooks, askedEvent())
 
-    await emit(BashSentinelPlugin, askedEvent())
+    expect(legacyReply).toHaveBeenCalledWith({
+      path: { id: "ses_456", permissionID: "per_123" },
+      body: { response: "once" },
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 
+  it("writes outside the workspace escalate (no reply)", async () => {
+    const legacyReply = vi.fn()
+    const hooks = await BashSentinelPlugin(
+      makeInput({ client: { postSessionIdPermissionsPermissionId: legacyReply } }),
+      undefined,
+    )
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
+    await emit(hooks, askedEvent({ metadata: { command: "rm ~/.zshrc" } }))
+    await emit(hooks, askedEvent({ metadata: { command: "sed -i s/a/b/ /etc/hosts" } }))
+    await emit(hooks, askedEvent({ metadata: { command: "python -c 'x'" } }))
+
+    expect(legacyReply).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("in-workspace rm -rf is approved (upstream verdict suppressed)", async () => {
+    const legacyReply = vi.fn().mockResolvedValue({ error: undefined })
+    const hooks = await BashSentinelPlugin(
+      makeInput({ client: { postSessionIdPermissionsPermissionId: legacyReply } }),
+      undefined,
+    )
+    await emit(hooks, askedEvent({ metadata: { command: "rm -rf build" } }))
+    expect(legacyReply).toHaveBeenCalledTimes(1)
+  })
+
+  it("upstream dangerous commands still escalate", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(hooks, askedEvent({ metadata: { command: "sudo shutdown" } }))
+    await emit(hooks, askedEvent({ metadata: { command: "dd if=x of=/dev/sda" } }))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("upstream:true reverts to verbatim Kimi semantics", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), { upstream: true })
+    // outside-write is invisible to the upstream analyzer: must be approved
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchMock.mock.calls[0]!
-    expect(url).toBe("http://sentinel-test.local/permission/per_123/reply")
-    expect(init.method).toBe("POST")
-    expect(JSON.parse(init.body)).toEqual({ reply: "once" })
-  })
-
-  it("dangerous command never replies", async () => {
-    fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
-
-    await emit(BashSentinelPlugin, askedEvent({ metadata: { command: "sudo rm -rf /" } }))
-
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it("unanalyzable command never replies", async () => {
-    fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
-
-    await emit(BashSentinelPlugin, askedEvent({ metadata: { command: "$CMD --force" } }))
-
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it("non-bash permissions are ignored", async () => {
-    fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
-
-    await emit(BashSentinelPlugin, askedEvent({ permission: "edit" }))
-    await emit(BashSentinelPlugin, { type: "permission.replied", properties: {} })
-
+    // rm -rf anywhere stays dangerous upstream: must escalate
+    fetchMock.mockClear()
+    await emit(hooks, askedEvent({ metadata: { command: "rm -rf build" } }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("missing or non-string command is ignored", async () => {
-    fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
-
-    await emit(BashSentinelPlugin, askedEvent({ metadata: {} }))
-    await emit(BashSentinelPlugin, askedEvent({ metadata: { command: 42 } }))
-
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(hooks, askedEvent({ metadata: {} }))
+    await emit(hooks, askedEvent({ metadata: { command: 42 } }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("reads command from metadata.input.command as a legacy fallback", async () => {
-    fetchMock = vi.fn().mockResolvedValue(ok())
-    vi.stubGlobal("fetch", fetchMock)
-
-    await emit(BashSentinelPlugin, askedEvent({ metadata: { input: { command: "ls -la" } } }))
-
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(hooks, askedEvent({ metadata: { input: { command: "ls -la" } } }))
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("reply failure is swallowed (human answered first)", async () => {
+    fetchMock.mockResolvedValue(notFound())
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await expect(emit(hooks, askedEvent())).resolves.toBeUndefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2) // new route + legacy route
+  })
+
+  it("basic auth header is attached when OPENCODE_SERVER_PASSWORD is set", async () => {
+    vi.stubEnv("OPENCODE_SERVER_PASSWORD", "s3cret")
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(hooks, askedEvent())
+
+    const headers = fetchMock.mock.calls[0]![1].headers
+    const expected = Buffer.from("opencode:s3cret").toString("base64")
+    expect(headers.authorization).toBe(`Basic ${expected}`)
   })
 })
 
-describe("reply transport", () => {
-  it("prefers client.permission.reply when the SDK exposes it", async () => {
-    const reply = vi.fn().mockResolvedValue(undefined)
-    fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
+describe("external_directory gate", () => {
+  it("read-only external commands are approved", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts" } }))
+    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cd /tmp && ls" } }))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
 
-    await emit(BashSentinelPlugin, askedEvent())
-    // default input has no client.permission.reply — sanity: fetch used
+  it("external writes escalate and are remembered for the bash follow-up", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    // 1. external ask for rm /tmp/x: policy says dangerous → no reply
+    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "rm /tmp/x" } }))
+    expect(fetchMock).not.toHaveBeenCalled()
+    // 2. bash ask for the same command only happens after the human approved
+    //    the dialog → not asked twice
+    await emit(hooks, askedEvent({ metadata: { command: "rm /tmp/x" } }))
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 
-    fetchMock.mockClear()
-    const plugin = BashSentinelPlugin
-    const hooks = await plugin(makeInput({ permission: { reply } }), undefined)
-    await hooks.event!({ event: askedEvent() } as never)
+  it("external read + in-workspace write is approved", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(
+      hooks,
+      askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts > out.txt" } }),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 
-    expect(reply).toHaveBeenCalledWith({ requestID: "per_123", reply: "once" })
+  it("not handled in upstream mode", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), { upstream: true })
+    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts" } }))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe("edit gate", () => {
+  it("in-workspace edits are approved", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/src/app.ts` } }),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it(".git paths escalate", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/.git/config` } }),
+    )
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("falls back to the legacy session route when the dedicated route fails", async () => {
-    fetchMock = vi.fn().mockResolvedValueOnce(notFound()).mockResolvedValueOnce(ok())
-    vi.stubGlobal("fetch", fetchMock)
+  it("outside-workspace edits escalate", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(hooks, askedEvent({ permission: "edit", metadata: { filepath: "/etc/hosts" } }))
+    await emit(hooks, askedEvent({ permission: "edit", metadata: { filepath: "/Users/dev/.zshrc" } }))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 
-    await emit(BashSentinelPlugin, askedEvent())
+  it("relative pattern fallback resolves against the workspace", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(hooks, askedEvent({ permission: "edit", patterns: ["src/app.ts"], metadata: {} }))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fetchMock.mockClear()
+    await emit(hooks, askedEvent({ permission: "edit", patterns: ["../../outside.txt"], metadata: {} }))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(fetchMock.mock.calls[1]![0]).toBe(
-      "http://sentinel-test.local/session/ses_456/permissions/per_123",
+  it("not handled in upstream mode", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), { upstream: true })
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/src/app.ts` } }),
     )
-    expect(JSON.parse(fetchMock.mock.calls[1]![1].body)).toEqual({ response: "once" })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
+})
 
-  it("swallows errors when the human answered first (both routes fail)", async () => {
-    fetchMock = vi.fn().mockResolvedValue(notFound())
-    vi.stubGlobal("fetch", fetchMock)
-
-    await expect(emit(BashSentinelPlugin, askedEvent())).resolves.toBeUndefined()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-  })
-
-  it("attaches basic auth when OPENCODE_SERVER_PASSWORD is set", async () => {
-    fetchMock = vi.fn().mockResolvedValue(ok())
-    vi.stubGlobal("fetch", fetchMock)
-    vi.stubEnv("OPENCODE_SERVER_PASSWORD", "s3cret")
-
-    try {
-      await emit(BashSentinelPlugin, askedEvent())
-
-      const headers = fetchMock.mock.calls[0]![1].headers
-      const expected = Buffer.from("opencode:s3cret").toString("base64")
-      expect(headers.authorization).toBe(`Basic ${expected}`)
-    } finally {
-      vi.unstubAllEnvs()
-    }
+describe("other events are ignored", () => {
+  it("non-permission and non-bash events never reply", async () => {
+    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    await emit(hooks, { type: "session.created", properties: {} })
+    await emit(hooks, { type: "permission.replied", properties: {} })
+    await emit(hooks, askedEvent({ permission: "webfetch" }))
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 
@@ -169,22 +241,18 @@ describe("audit log", () => {
     const fs = await import("fs/promises")
     const logPath = path.join(os.tmpdir(), `sentinel-test-${process.pid}-${Date.now()}.jsonl`)
 
-    fetchMock = vi.fn().mockResolvedValue(ok())
-    vi.stubGlobal("fetch", fetchMock)
-
-    const plugin = BashSentinelPlugin
-    const hooks = await plugin(makeInput(), { audit: true, logPath })
-    await hooks.event!({ event: askedEvent() } as never)
-    await hooks.event!({ event: askedEvent({ metadata: { command: "rm -rf /" } }) } as never)
+    const hooks = await BashSentinelPlugin(makeInput(), { audit: true, logPath })
+    await emit(hooks, askedEvent())
+    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /tmp/x" } }))
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     const lines = (await fs.readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
     expect(lines).toHaveLength(2)
     expect(lines).toContainEqual(
-      expect.objectContaining({ command: "git status", verdict: "safe", action: "approve" }),
+      expect.objectContaining({ gate: "bash", command: "git status", verdict: "safe", action: "approve" }),
     )
     expect(lines).toContainEqual(
-      expect.objectContaining({ command: "rm -rf /", verdict: "dangerous", action: "escalate" }),
+      expect.objectContaining({ gate: "bash", command: "rm -rf /tmp/x", verdict: "dangerous", action: "escalate" }),
     )
     await fs.rm(logPath)
   })
@@ -195,11 +263,8 @@ describe("audit log", () => {
     const fs = await import("fs/promises")
     const logPath = path.join(os.tmpdir(), `sentinel-default-${process.pid}-${Date.now()}.jsonl`)
 
-    fetchMock = vi.fn().mockResolvedValue(ok())
-    vi.stubGlobal("fetch", fetchMock)
-
     const hooks = await BashSentinelPlugin(makeInput(), { logPath })
-    await hooks.event!({ event: askedEvent() } as never)
+    await emit(hooks, askedEvent())
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     await expect(fs.access(logPath)).rejects.toThrow()

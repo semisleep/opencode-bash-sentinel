@@ -41,7 +41,9 @@ const server = http.createServer((req, res) => {
     const hasToolResult = messages.some(
       (m) => m.role === "tool" || (Array.isArray(m.content) && m.content.some?.((p) => p.type === "tool-result")),
     )
+    const editMatch = /^EDITW:(.+)$/s.exec(text)
     const command = !hasToolResult && /^CMD:(.+)$/s.exec(text)?.[1]
+    const editPath = !hasToolResult && editMatch?.[1]
     res.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
@@ -51,7 +53,12 @@ const server = http.createServer((req, res) => {
       res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: "" } }] }))
       res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ command }) } }] }))
       res.write(chunk({}, "tool_calls"))
-      console.log(`[mock] tool-call ${JSON.stringify(command)}`)
+      console.log(`[mock] tool-call bash ${JSON.stringify(command)}`)
+    } else if (editPath) {
+      res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "write", arguments: "" } }] }))
+      res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ filePath: editPath, content: "written by sentinel e2e\n" }) } }] }))
+      res.write(chunk({}, "tool_calls"))
+      console.log(`[mock] tool-call write ${JSON.stringify(editPath)}`)
     } else {
       res.write(chunk({ role: "assistant", content: "ok" }))
       res.write(chunk({}, "stop"))

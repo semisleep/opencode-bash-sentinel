@@ -34,9 +34,9 @@ const SIMPLE_DANGEROUS_COMMANDS: ReadonlySet<string> = new Set([
   'wipefs',
 ]);
 
-const PRIVILEGE_WRAPPERS: ReadonlySet<string> = new Set(['sudo', 'doas']);
+export const PRIVILEGE_WRAPPERS: ReadonlySet<string> = new Set(['sudo', 'doas']);
 
-const PRIVILEGE_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+export const PRIVILEGE_VALUE_OPTIONS: ReadonlySet<string> = new Set([
   '-u',
   '--user',
   '-g',
@@ -57,9 +57,9 @@ const PRIVILEGE_VALUE_OPTIONS: ReadonlySet<string> = new Set([
   '--type',
 ]);
 
-const NESTED_SHELLS: ReadonlySet<string> = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh', 'ash']);
+export const NESTED_SHELLS: ReadonlySet<string> = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh', 'ash']);
 
-const LAUNCH_WRAPPERS: ReadonlySet<string> = new Set([
+export const LAUNCH_WRAPPERS: ReadonlySet<string> = new Set([
   'env',
   'command',
   'exec',
@@ -68,7 +68,7 @@ const LAUNCH_WRAPPERS: ReadonlySet<string> = new Set([
   'nice',
 ]);
 
-const WRAPPER_VALUE_OPTIONS: ReadonlySet<string> = new Set([
+export const WRAPPER_VALUE_OPTIONS: ReadonlySet<string> = new Set([
   '-u',
   '--unset',
   '-C',
@@ -89,7 +89,7 @@ const SYSTEMCTL_DANGEROUS_SUBCOMMANDS: ReadonlySet<string> = new Set([
 
 const SYSTEMCTL_VALUE_OPTIONS: ReadonlySet<string> = new Set(['-H', '--host', '-M', '--machine']);
 
-const DD_SAFE_DEVICE_TARGETS: ReadonlySet<string> = new Set([
+export const DD_SAFE_DEVICE_TARGETS: ReadonlySet<string> = new Set([
   '/dev/null',
   '/dev/zero',
   '/dev/full',
@@ -119,17 +119,17 @@ export function analyzeCommandString(command: string): DangerousVerdict | undefi
   }
 }
 
-type BashParseResult =
+export type BashParseResult =
   | { readonly ok: true; readonly hasError: boolean; readonly root: SyntaxNode }
   | { readonly ok: false };
 
-function parseSource(source: string): BashParseResult {
+export function parseSource(source: string): BashParseResult {
   const result = parse(source, PARSE_OPTIONS);
   if (!result.ok) return { ok: false };
   return { ok: true, hasError: result.hasError, root: result.rootNode };
 }
 
-function analyzeSource(
+export function analyzeSource(
   source: string,
   depth: number,
   parse: (source: string) => BashParseResult,
@@ -145,21 +145,33 @@ function analyzeSource(
   return undefined;
 }
 
-function collectCommands(node: SyntaxNode, out: SyntaxNode[]): void {
+export function collectCommands(node: SyntaxNode, out: SyntaxNode[]): void {
   if (node.type === 'command') out.push(node);
   for (const child of node.children) collectCommands(child, out);
 }
 
-function analyzeCommand(
+export function analyzeCommand(
   command: SyntaxNode,
   depth: number,
   parse: (source: string) => BashParseResult,
 ): DangerousVerdict | undefined {
+  const invocation = commandInvocation(command);
+  if (invocation === undefined) return { kind: 'unanalyzable' };
+  return analyzeInvocation(invocation.name, invocation.args, invocation.dropped, depth, parse);
+}
+
+export interface CommandInvocation {
+  readonly name: string;
+  readonly args: readonly string[];
+  readonly dropped: boolean;
+}
+
+export function commandInvocation(command: SyntaxNode): CommandInvocation | undefined {
   const nameIndex = command.children.findIndex((child) => child.type === 'command_name');
   const nameNode = nameIndex >= 0 ? command.children[nameIndex] : undefined;
   const nameWord = nameNode?.children.find((child) => child.isNamed);
   const rawName = nameWord === undefined ? undefined : literalText(nameWord);
-  if (rawName === undefined || rawName.length === 0) return { kind: 'unanalyzable' };
+  if (rawName === undefined || rawName.length === 0) return undefined;
   const args: string[] = [];
   let dropped = false;
   for (const child of command.children.slice(nameIndex + 1)) {
@@ -171,7 +183,7 @@ function analyzeCommand(
       args.push(value);
     }
   }
-  return analyzeInvocation(normalizeCommandName(rawName), args, dropped, depth, parse);
+  return { name: normalizeCommandName(rawName), args, dropped };
 }
 
 function analyzeInvocation(
@@ -277,7 +289,7 @@ function analyzeInvocation(
   return undefined;
 }
 
-function normalizeCommandName(raw: string): string {
+export function normalizeCommandName(raw: string): string {
   let name = raw;
   const separator = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
   if (separator >= 0) name = name.slice(separator + 1);
@@ -285,7 +297,6 @@ function normalizeCommandName(raw: string): string {
   if (name.endsWith('.exe')) name = name.slice(0, -'.exe'.length);
   return name;
 }
-
 function dropLeadingOptions(args: readonly string[], valueOptions: ReadonlySet<string>): string[] {
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
@@ -296,7 +307,7 @@ function dropLeadingOptions(args: readonly string[], valueOptions: ReadonlySet<s
   return [];
 }
 
-function dropLaunchWrapperOperands(name: string, args: readonly string[]): string[] {
+export function dropLaunchWrapperOperands(name: string, args: readonly string[]): string[] {
   let rest = dropLeadingOptions(args, WRAPPER_VALUE_OPTIONS);
   if (name === 'env') {
     let i = rest[0] === '-' ? 1 : 0;
@@ -306,7 +317,7 @@ function dropLaunchWrapperOperands(name: string, args: readonly string[]): strin
   return rest;
 }
 
-function literalText(node: SyntaxNode): string | undefined {
+export function literalText(node: SyntaxNode): string | undefined {
   switch (node.type) {
     case 'word': {
       const raw = node.text;
