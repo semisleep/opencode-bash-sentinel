@@ -1,0 +1,30 @@
+{
+  "name": "opencode-bash-sentinel",
+  "version": "0.1.0",
+  "description": "AST-based bash command gate for OpenCode — auto-approves provably safe commands, escalates dangerous or un-analyzable ones to the native approval dialog. Engine ported from MoonshotAI/kimi-code (MIT).",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "index.ts",
+    "README.md",
+    "NOTICE.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.0.73",
+    "bun-types": "^1.4.2",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "opencode": ">=1.18.0"
+  }
+}

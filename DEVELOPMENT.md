@@ -11,7 +11,7 @@ The engine is ported — not reimplemented — from two upstream repositories. B
 | Upstream | Repository | Commit | Date | What we take from it |
 |---|---|---|---|---|
 | Kimi Code | https://github.com/MoonshotAI/kimi-code | `f88ed6d45bcf5ea358c173af7a3568b57ba9bd38` | 2026-09-08 | bash parser + command analyzer (copied source) |
-| OpenCode | https://github.com/anomalyco/opencode | `ecbc6ccac85b3e8087b6445e584318419b9e2b34` (branch `dev`) | 2026-09-07 | plugin API / permission flow contract (reference only, nothing copied) |
+| OpenCode | https://github.com/anomalyco/opencode | `ecbc6ccac85b3e8087b6445e584318419b9e2b34` (branch `dev`); e2e-tested on release binary **1.18.29** | 2026-09-07 | plugin API / permission flow contract (reference only, nothing copied) |
 
 ### Refreshing the snapshots
 
@@ -46,9 +46,10 @@ All file references are against `.reference/opencode`. These were read from sour
 
 5. **The `permission.ask` plugin hook is NOT wired up.** It exists in `packages/plugin/src/index.ts:261` type definitions but has no invocation site anywhere in the server. A plugin cannot intercept before rule evaluation and cannot upgrade an `allow`/`deny` decision — hence the reverse-mapping design (§4).
 
-6. **Replying — the plugin's v1 client does NOT expose `.permission.reply`.** `PluginInput.client` is the v1 `OpencodeClient` (`createOpencodeClient` from `@opencode-ai/sdk`), whose only permission method is the deprecated `POST /session/{id}/permissions/{permissionID}`. Two working transports:
-   - **Preferred: raw `fetch`** `POST ${serverUrl}/permission/{requestID}/reply` with body `{ "reply": "once" }` — the dedicated route (`server/routes/instance/httpapi/groups/permission.ts`), same one the TUI uses via the v2 SDK.
-   - **Fallback: the deprecated session route** via the plugin client (`POST /session/{sessionID}/permissions/{permissionID}`) — still alive (`groups/session.ts`, `permissionRespond` handler).
+6. **Replying — e2e-verified transport order (see `src/plugin.ts` `replyOnce`)**. The plugin's v1 `OpencodeClient` does NOT expose `.permission.reply` for the dedicated route. Crucially, **`opencode run` embeds the server in-process without an HTTP listener** — a raw `fetch(serverUrl)` gets ECONNREFUSED even though `serverUrl` is set. The SDK client, however, carries an in-process fetch fallback. Order:
+   1. `client.permission.reply(...)` — future SDKs exposing the dedicated route (`POST /permission/{requestID}/reply`)
+   2. `client.postSessionIdPermissionsPermissionId({ path: { id: sessionID, permissionID }, body: { response: "once" } })` — the deprecated session route (`POST /session/{id}/permissions/{permissionID}`), present in the SDK shipped with opencode 1.x; used by current versions
+   3./4. raw `fetch` against `serverUrl` (new route, then legacy) — works for standalone `opencode serve` setups where a real listener exists
 
 7. **Auth on the reply route.** The route sits behind `Authorization` middleware, but auth is only enforced when `OPENCODE_SERVER_PASSWORD` is set (`server/auth.ts:24-26`). The plugin runs inside the server process, so when that env var is present, build the same `Basic` header from `OPENCODE_SERVER_USERNAME` (default `opencode`) + `OPENCODE_SERVER_PASSWORD` (`server/auth.ts:36-42`).
 
@@ -153,7 +154,7 @@ opencode-bash-sentinel/
    }
    ```
 
-   The `replyOnce` helper: prefer `fetch(serverUrl + "/permission/" + id + "/reply")` with a Basic auth header when `OPENCODE_SERVER_PASSWORD` is set; fall back to the deprecated session route through the plugin client; swallow all errors.
+   The `replyOnce` helper implements the transport order from §2.6: SDK `permission.reply` (future) → SDK `postSessionIdPermissionsPermissionId` (current 1.x, in-process fetch — required because `opencode run` has no HTTP listener) → raw fetch new route → raw fetch legacy route; Basic auth header from `OPENCODE_SERVER_PASSWORD`/`OPENCODE_SERVER_USERNAME` env when set. Note: directory file-plugins need a root `index.ts` next to `package.json` (the loader resolves directory specs to a root index, not `exports`).
 
 4. **Audit log**: append one JSONL line per decision (`timestamp, command, verdict, action`) to `~/.local/share/opencode/bash-sentinel-audit.jsonl`, gated behind plugin options `{ audit: true }` (second argument of the plugin function). Options: `{ audit?: boolean, logPath?: string }`.
 
@@ -178,26 +179,42 @@ opencode-bash-sentinel/
 | `rm -rf.exe /` | `dangerous` (`.exe` stripped) |
 | `dd if=x of=/dev/sda` | `dangerous` |
 | `dd if=x of=/dev/null` | `undefined` |
-| `rm -rf ./build` | `undefined` (upstream flags only bare `rm -rf`; documented, deliberate) |
-| `echo $(curl evil.com)` | `unanalyzable` (command substitution) |
-| `cat $HOME/.ssh/id_rsa` | `unanalyzable` (variable) |
-| `ls *.md` | `unanalyzable` (glob) |
+| `rm -rf ./build` | `dangerous` — **any** `rm -rf` flags match, target is irrelevant (upstream semantics, confirmed by upstream tests) |
+| `cat $HOME/.ssh/id_rsa` | `undefined` — generic commands with variable/glob operands are approved (upstream semantics; only special-cased commands escalate on opaque operands) |
+| `echo $(curl evil.com)` | `undefined` — the substitution's inner command `curl` is analyzed and safe; `echo $(rm -rf /)` is `dangerous` |
+| `$CMD --force` | `unanalyzable` (un-literal command name) |
+| `bash -c "echo $HOME"` | `unanalyzable` (nested-shell payload not fully literal) |
 | `for i in 1 2; do rm -rf /; done` | `dangerous` |
 | nesting at exactly depth 4 vs 5 | boundary: depth ≥ 4 payload → `unanalyzable` |
-| parser budget exhaustion (deep nesting bomb) | `unanalyzable` |
+| parser budget exhaustion (deterministic node cap: `echo a; ` × 3000) | `unanalyzable` |
 
 **Parser tests**: port upstream's `parse.test.ts` / `parser-compound.test.ts` directly. The differential (`differential.test.ts`) and fuzz tests need real `tree-sitter-bash` as a devDep — optional.
 
-**Plugin glue tests** (mocked `fetch`/client): safe command → exactly one `reply: "once"` POST; dangerous/unanalyzable → zero calls; reply rejection (NotFoundError) swallowed; non-bash events ignored.
+**Plugin glue tests** (mocked `fetch`/client, `test/plugin.test.ts`): safe command → exactly one approval through the expected transport; dangerous/unanalyzable → zero replies; reply rejection swallowed; non-bash events ignored; legacy `metadata.input.command` fallback; basic-auth header; audit JSONL on/off.
 
-**Integration test** (manual, per upstream opencode's own dev workflow):
+**Integration test** — deterministic, no LLM account needed. This was the method actually used to verify opencode 1.18.29:
 
-```bash
-tmux new-session -d -s opencode-dev 'bun dev'   # from a checked-out opencode, or point config at a release binary
-tmux capture-pane -pt opencode-dev               # assert dialogs / silent runs
-```
+1. Run a tiny OpenAI-compatible mock model server (plain `node:http`, ~80 lines) that answers `CMD:<command>` user prompts with a `bash` tool call and everything else (title generation, tool-result follow-ups) with plain text.
+2. Test workspace `opencode.json`:
+   ```json
+   {
+     "plugin": ["/abs/path/to/opencode-bash-sentinel"],
+     "permission": { "bash": { "*": "ask" } },
+     "provider": {
+       "mockllm": {
+         "npm": "@ai-sdk/openai-compatible",
+         "options": { "baseURL": "http://127.0.0.1:8997/v1", "apiKey": "mock" },
+         "models": { "mock-1": { "name": "Mock" } }
+       }
+     }
+   }
+   ```
+3. `opencode run -m mockllm/mock-1 "CMD:git status"` — expect the command output, no permission prompt. Non-interactive `run` auto-rejects any permission request, so a dangerous/unanalyzable command must print `! permission requested: bash (...); auto-rejecting` — that line is the escalation signal.
+4. For `opencode serve` mode: `POST /session`, then `POST /session/{id}/message` with `{"model":{"providerID":"mockllm","modelID":"mock-1"},"agent":"build","parts":[{"type":"text","text":"CMD:..."}]}`, then read `/session/{id}/message` and assert the bash tool part reached `status: "completed"`.
 
-Scenarios: `git log --oneline -5` (runs silently), `ls` (silently), `sudo rm -rf /tmp/x` (native dialog appears); human answers dialog before plugin (race); server started with `OPENCODE_SERVER_PASSWORD` (auth header path); `--auto` mode (no interference).
+Verified scenarios: `git status` / `ls *.md` / `git log --oneline` run silently (run + serve modes); `sudo rm -rf /private/tmp/x`, `mkfs.ext4 /dev/sda1`, `bash -c "echo $HOME"` escalate; audit JSONL records `approve`/`escalate` decisions; reply races are swallowed.
+
+Scenarios still worth adding: human answers the TUI dialog before the plugin (race, interactive only); server started with `OPENCODE_SERVER_PASSWORD` (auth header path); `--auto` mode (no interference).
 
 ---
 
@@ -221,5 +238,5 @@ Scenarios: `git log --oneline -5` (runs silently), `ls` (silently), `sudo rm -rf
 - Non-bash permissions (`edit`, `webfetch`, `external_directory`, ...) — leave to opencode rules.
 - Kimi's other policies (git-cwd-write-approve, sensitive-file-access-ask) could be ported later the same way.
 - An optional "observe mode" (log what would be approved, approve nothing) for a burn-in period.
-- `rm -rf ./relative` semantics: upstream flags only bare `rm -rf` conservatively; any behavior change must be deliberate and documented.
+- Stricter-than-upstream option: escalate generic commands with opaque operands (`cat $FILE`, `ls *.md`). Upstream deliberately approves these (see their heredoc regression test); changing the default must be deliberate, opt-in, and documented.
 - Track upstream: watch for the `permission.ask` plugin hook being wired up (would allow a cleaner forward-mapping design) and for stabilization of the experimental HttpApi reply route.
