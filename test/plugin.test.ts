@@ -54,6 +54,15 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+async function makePlugin(options?: Record<string, unknown>) {
+  const hooks = await BashSentinelPlugin(makeInput(), options)
+  // the startup transport probe may use the stubbed fetch; let it settle and
+  // start counting from zero
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  fetchMock.mockClear()
+  return hooks
+}
+
 describe("bash gate", () => {
   it("safe command is approved via the legacy SDK route", async () => {
     const legacyReply = vi.fn().mockResolvedValue({ error: undefined })
@@ -96,14 +105,14 @@ describe("bash gate", () => {
   })
 
   it("upstream dangerous commands still escalate", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(hooks, askedEvent({ metadata: { command: "sudo shutdown" } }))
     await emit(hooks, askedEvent({ metadata: { command: "dd if=x of=/dev/sda" } }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("upstream:true reverts to verbatim Kimi semantics", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), { upstream: true })
+    const hooks = await makePlugin({ upstream: true })
     // outside-write is invisible to the upstream analyzer: must be approved
     await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -114,46 +123,46 @@ describe("bash gate", () => {
   })
 
   it("missing or non-string command is ignored", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(hooks, askedEvent({ metadata: {} }))
     await emit(hooks, askedEvent({ metadata: { command: 42 } }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("reads command from metadata.input.command as a legacy fallback", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(hooks, askedEvent({ metadata: { input: { command: "ls -la" } } }))
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it("reply failure is swallowed (human answered first)", async () => {
     fetchMock.mockResolvedValue(notFound())
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await expect(emit(hooks, askedEvent())).resolves.toBeUndefined()
     expect(fetchMock).toHaveBeenCalledTimes(2) // new route + legacy route
   })
 
   it("basic auth header is attached when OPENCODE_SERVER_PASSWORD is set", async () => {
     vi.stubEnv("OPENCODE_SERVER_PASSWORD", "s3cret")
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(hooks, askedEvent())
 
-    const headers = fetchMock.mock.calls[0]![1].headers
+    const request = fetchMock.mock.calls[0]![0] as Request
     const expected = Buffer.from("opencode:s3cret").toString("base64")
-    expect(headers.authorization).toBe(`Basic ${expected}`)
+    expect(request.headers.get("authorization")).toBe(`Basic ${expected}`)
   })
 })
 
 describe("external_directory gate", () => {
   it("read-only external commands are approved", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts" } }))
     await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cd /tmp && ls" } }))
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it("external writes escalate and are remembered for the bash follow-up", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     // 1. external ask for rm /tmp/x: policy says dangerous → no reply
     await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "rm /tmp/x" } }))
     expect(fetchMock).not.toHaveBeenCalled()
@@ -164,7 +173,7 @@ describe("external_directory gate", () => {
   })
 
   it("external read + in-workspace write is approved", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(
       hooks,
       askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts > out.txt" } }),
@@ -173,7 +182,7 @@ describe("external_directory gate", () => {
   })
 
   it("not handled in upstream mode", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), { upstream: true })
+    const hooks = await makePlugin({ upstream: true })
     await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts" } }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -181,7 +190,7 @@ describe("external_directory gate", () => {
 
 describe("edit gate", () => {
   it("in-workspace edits are approved", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(
       hooks,
       askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/src/app.ts` } }),
@@ -190,7 +199,7 @@ describe("edit gate", () => {
   })
 
   it(".git paths escalate", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(
       hooks,
       askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/.git/config` } }),
@@ -199,14 +208,14 @@ describe("edit gate", () => {
   })
 
   it("outside-workspace edits escalate", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(hooks, askedEvent({ permission: "edit", metadata: { filepath: "/etc/hosts" } }))
     await emit(hooks, askedEvent({ permission: "edit", metadata: { filepath: "/Users/dev/.zshrc" } }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("relative pattern fallback resolves against the workspace", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(hooks, askedEvent({ permission: "edit", patterns: ["src/app.ts"], metadata: {} }))
     expect(fetchMock).toHaveBeenCalledTimes(1)
     fetchMock.mockClear()
@@ -215,7 +224,7 @@ describe("edit gate", () => {
   })
 
   it("not handled in upstream mode", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), { upstream: true })
+    const hooks = await makePlugin({ upstream: true })
     await emit(
       hooks,
       askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/src/app.ts` } }),
@@ -226,7 +235,7 @@ describe("edit gate", () => {
 
 describe("other events are ignored", () => {
   it("non-permission and non-bash events never reply", async () => {
-    const hooks = await BashSentinelPlugin(makeInput(), undefined)
+    const hooks = await makePlugin()
     await emit(hooks, { type: "session.created", properties: {} })
     await emit(hooks, { type: "permission.replied", properties: {} })
     await emit(hooks, askedEvent({ permission: "webfetch" }))
@@ -241,7 +250,7 @@ describe("audit log", () => {
     const fs = await import("fs/promises")
     const logPath = path.join(os.tmpdir(), `sentinel-test-${process.pid}-${Date.now()}.jsonl`)
 
-    const hooks = await BashSentinelPlugin(makeInput(), { audit: true, logPath })
+    const hooks = await makePlugin({ audit: true, logPath })
     await emit(hooks, askedEvent())
     await emit(hooks, askedEvent({ metadata: { command: "rm -rf /tmp/x" } }))
     await new Promise((resolve) => setTimeout(resolve, 50))
@@ -263,7 +272,7 @@ describe("audit log", () => {
     const fs = await import("fs/promises")
     const logPath = path.join(os.tmpdir(), `sentinel-default-${process.pid}-${Date.now()}.jsonl`)
 
-    const hooks = await BashSentinelPlugin(makeInput(), { logPath })
+    const hooks = await makePlugin({ logPath })
     await emit(hooks, askedEvent())
     await new Promise((resolve) => setTimeout(resolve, 50))
 

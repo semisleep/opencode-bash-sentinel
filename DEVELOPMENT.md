@@ -46,10 +46,11 @@ All file references are against `.reference/opencode`. These were read from sour
 
 5. **The `permission.ask` plugin hook is NOT wired up.** It exists in `packages/plugin/src/index.ts:261` type definitions but has no invocation site anywhere in the server. A plugin cannot intercept before rule evaluation and cannot upgrade an `allow`/`deny` decision — hence the reverse-mapping design (§4).
 
-6. **Replying — e2e-verified transport order (see `src/plugin.ts` `replyOnce`)**. The plugin's v1 `OpencodeClient` does NOT expose `.permission.reply` for the dedicated route. Crucially, **`opencode run` embeds the server in-process without an HTTP listener** — a raw `fetch(serverUrl)` gets ECONNREFUSED even though `serverUrl` is set. The SDK client, however, carries an in-process fetch fallback. Order:
+6. **Replying — e2e-verified transport order (see `src/plugin.ts` `replyOnce`)**. The plugin's v1 `OpencodeClient` does NOT expose `.permission.reply` for the dedicated route. Crucially, **`opencode run` embeds the server in-process without an HTTP listener** — a raw `fetch(serverUrl)` gets ECONNREFUSED even though `serverUrl` is set. The SDK client, however, carries an in-process fetch (reachable as `client._client.getConfig().fetch`). Order:
    1. `client.permission.reply(...)` — future SDKs exposing the dedicated route (`POST /permission/{requestID}/reply`)
-   2. `client.postSessionIdPermissionsPermissionId({ path: { id: sessionID, permissionID }, body: { response: "once" } })` — the deprecated session route (`POST /session/{id}/permissions/{permissionID}`), present in the SDK shipped with opencode 1.x; used by current versions
-   3./4. raw `fetch` against `serverUrl` (new route, then legacy) — works for standalone `opencode serve` setups where a real listener exists
+   2. `client.postSessionIdPermissionsPermissionId(...)` — the deprecated session route, present in the SDK shipped with opencode 1.18.x
+   3./4. raw routes (new, then legacy) through **the SDK client's own configured fetch** (in-process in run mode), falling back to global fetch (serve mode) — survives removal of either SDK method
+   On startup, if no SDK method exists, the plugin probes `GET /permission` through the same transport; if that also fails it logs a loud `opencode-bash-sentinel transport probe failed` warning and writes a `degraded` audit line, instead of silently turning into all-prompts mode. `engines.opencode` is additionally pinned to `>=1.18.0 <2.0.0`.
 
 7. **Auth on the reply route.** The route sits behind `Authorization` middleware, but auth is only enforced when `OPENCODE_SERVER_PASSWORD` is set (`server/auth.ts:24-26`). The plugin runs inside the server process, so when that env var is present, build the same `Basic` header from `OPENCODE_SERVER_USERNAME` (default `opencode`) + `OPENCODE_SERVER_PASSWORD` (`server/auth.ts:36-42`).
 

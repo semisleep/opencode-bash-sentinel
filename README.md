@@ -34,7 +34,8 @@ On top of the path policy, the ported Kimi dangerous-command rules still apply e
 
 ## What gets escalated (examples)
 
-- Any write outside the workspace: `rm ~/.zshrc`, `sed -i s/a/b/ /etc/hosts`, `echo x > /tmp/out`, `cp proj /usr/local/bin/x`, `tee /tmp/log`, `rsync src/ /backup/`, `install`, `ln`, `truncate`, `shred`, `dd of=/tmp/img`
+- Any write outside the workspace: `rm ~/.zshrc`, `sed -i s/a/b/ /etc/hosts`, `echo x > /tmp/out`, `sudo cp proj /usr/local/bin/x`, `env mv proj /tmp/`, `sudo chmod`/`chown`/`mkdir`/`touch` on external paths, `tee /tmp/log`, `rsync src/ /backup/`, `install`, `ln`, `truncate`, `shred`, `dd of=/tmp/img`
+- Mutating `git` on another repository: `git -C /elsewhere checkout`, `git --git-dir=...` (read-only subcommands like `git -C /elsewhere log` stay silent)
 - Redirects (`>`, `>>`, `2>`, `&>`) whose target is outside the workspace, unresolvable (`> $OUT`), or inside `.git`
 - Escape hatches: `find ... -delete` / `-exec`, `xargs rm`, inline-code interpreters (`python -c`, `node -e`, `ruby -e`, `php -r`, any `osascript`)
 - `cd` outside the workspace followed by a relative write (`cd /tmp && echo x > f`)

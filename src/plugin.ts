@@ -37,6 +37,8 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
   // actually arrives (which implies the external one was approved).
   const externalEscalated = new Map<string, number>()
 
+  void probeTransport(input, config)
+
   return {
     event: async ({ event }) => {
       // The published SDK types lag behind the server's event stream (the
@@ -138,8 +140,9 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     //   2. client.postSessionIdPermissionsPermissionId — the deprecated
     //      session-scoped route (POST /session/{id}/permissions/{permissionID}),
     //      present in the v1 SDK shipped with opencode 1.x, same fallback.
-    //   3./4. raw fetch against serverUrl for standalone `opencode serve`
-    //      setups (new route, then legacy) with basic auth when configured.
+    //   3./4. raw routes through the SDK client's own configured fetch
+    //      (in-process in run mode) or global fetch (serve mode), new route
+    //      first, then legacy — survives removal of either SDK method.
     const client = input.client as ReplyClient
 
     if (typeof client.permission?.reply === "function") {
@@ -164,12 +167,15 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
       body: JSON.stringify({ reply: "once" }),
     }
 
-    const result = await fetch(`${base}/permission/${encodeURIComponent(request.id)}/reply`, init)
+    const transport = clientFetch(input) ?? fetch
+    const result = await transport(new Request(`${base}/permission/${encodeURIComponent(request.id)}/reply`, init))
     if (result.ok) return
 
-    const legacy = await fetch(
-      `${base}/session/${encodeURIComponent(request.sessionID)}/permissions/${encodeURIComponent(request.id)}`,
-      { ...init, body: JSON.stringify({ response: "once" }) },
+    const legacy = await transport(
+      new Request(
+        `${base}/session/${encodeURIComponent(request.sessionID)}/permissions/${encodeURIComponent(request.id)}`,
+        { ...init, body: JSON.stringify({ response: "once" }) },
+      ),
     )
     if (!legacy.ok) {
       throw new Error(`permission reply failed: ${result.status}; legacy: ${legacy.status}`)
@@ -220,6 +226,49 @@ type ReplyClient = {
     path: { id: string; permissionID: string }
     body: { response: "once" }
   }) => Promise<SdkResult>
+}
+
+// The SDK client runs on a fetch that is in-process when opencode embeds the
+// server (`opencode run` has no HTTP listener). Reusing it for raw routes
+// keeps replies working even if both SDK reply methods disappear.
+function clientFetch(input: Parameters<Plugin>[0]): typeof fetch | undefined {
+  try {
+    const inner = (input.client as unknown as {
+      _client?: { getConfig?: () => { fetch?: unknown } }
+    })._client
+    const f = inner?.getConfig?.().fetch
+    return typeof f === "function" ? (f as typeof fetch) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// Startup health check: if no reply transport can reach the server, say so
+// loudly instead of silently degrading into all-prompts mode.
+async function probeTransport(
+  input: Parameters<Plugin>[0],
+  config: { audit: boolean; logPath: string },
+): Promise<void> {
+  const client = input.client as ReplyClient
+  const hasSdkMethod =
+    typeof client.permission?.reply === "function" ||
+    typeof client.postSessionIdPermissionsPermissionId === "function"
+  if (hasSdkMethod) return
+
+  const base = input.serverUrl.href.replace(/\/$/, "")
+  const transport = clientFetch(input) ?? fetch
+  try {
+    const response = await transport(new Request(`${base}/permission`))
+    if (!response.ok && response.status !== 401 && response.status !== 404 && response.status !== 405) {
+      throw new Error(`unexpected status ${response.status}`)
+    }
+  } catch (error) {
+    const message = `[opencode-bash-sentinel] transport probe failed (${String(error)}) — auto-approval is disabled, every command will prompt. This plugin version is likely incompatible with this opencode version.`
+    console.error(message)
+    if (config.audit) {
+      await writeAudit(config.logPath, "(transport probe)", { kind: "unanalyzable" }, "degraded", "transport")
+    }
+  }
 }
 
 function authHeaders(): Record<string, string> {

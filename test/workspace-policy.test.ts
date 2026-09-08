@@ -12,6 +12,68 @@ const dangerous = (command: string) => expect(policy(command).verdict?.kind).toB
 const WS = "/Users/dev/project"
 const HOME = process.platform === "win32" ? "C:\\Users\\dev" : "/Users/dev"
 
+describe("wrapper-wrapped FILES commands (sudo/env blind-spot fix)", () => {
+  it("sudo/env/nohup-wrapped external writes escalate", () => {
+    dangerous("sudo cp proj /usr/local/bin/x")
+    dangerous("sudo cp proj /etc/passwd.bak")
+    dangerous("env mv proj /tmp/dest")
+    dangerous("nohup chmod 000 /etc/hosts")
+    dangerous("sudo chown root /tmp/x")
+    dangerous("sudo mkdir /usr/local/lib/x")
+    dangerous("sudo touch /etc/evil")
+    dangerous("env FOO=1 cp -t /tmp proj/x")
+  })
+
+  it("same commands inside the workspace are fine", () => {
+    safe("sudo cp src build/x")
+    safe("env mv a b")
+    safe("nohup chmod +x tool")
+    safe("mkdir -p out/bin")
+    safe("touch marker")
+    safe("cp -t build src/x src/y")
+  })
+
+  it("copy/move destination semantics", () => {
+    safe("cp /etc/hosts local-copy") // external read, internal write
+    dangerous("cp local /etc/hosts.bak") // internal read, external write
+    safe("mv old new")
+    safe("install -m 755 tool bin/tool")
+  })
+
+  it("mode/date value flags are not mistaken for paths", () => {
+    safe("touch -t 202601011200 file")
+    safe("mkdir -m 755 dir")
+    safe("chmod --reference=base file")
+  })
+})
+
+describe("git external repository access", () => {
+  it("git -C outside with mutating subcommands escalates", () => {
+    dangerous("git -C /tmp/other-repo checkout .")
+    dangerous("git -C /tmp/other-repo reset --hard")
+    dangerous("git -C /tmp/other-repo clean -fdx")
+    dangerous("git -C ~/other push")
+    dangerous("sudo git -C /tmp/x commit -m x")
+    dangerous("git --git-dir=/tmp/x/.git checkout main")
+  })
+
+  it("read-only subcommands on external repositories are fine", () => {
+    safe("git -C /tmp/other-repo status")
+    safe("git -C /tmp/other-repo log --oneline -5")
+    safe("git -C /tmp/other-repo diff HEAD~1")
+    safe("git --git-dir=/tmp/x/.git log --oneline")
+  })
+
+  it("in-workspace git commands are unrestricted", () => {
+    safe("git status")
+    safe("git checkout .")
+    safe("git reset --hard")
+    safe("git clean -fdx")
+    safe("git -C sub/dir add .")
+    safe(`git -C ${WS} commit -m x`)
+  })
+})
+
 describe("rm targets", () => {
   it("inside workspace auto-approved regardless of flags", () => {
     safe("rm file.txt")

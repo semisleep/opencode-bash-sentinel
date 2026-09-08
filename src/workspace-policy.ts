@@ -107,6 +107,49 @@ const ALWAYS_ESCALATE_INTERPRETERS = new Set(['osascript'])
 
 const FIND_DESTRUCTIVE_FLAGS = new Set(['-delete', '--delete', '-exec', '-execdir', '-ok', '-okdir'])
 
+// git subcommands that only read; anything else on an external repo escalates
+const GIT_READONLY_SUBCOMMANDS = new Set([
+  'status',
+  'log',
+  'diff',
+  'show',
+  'blame',
+  'annotate',
+  'ls-files',
+  'rev-parse',
+  'describe',
+  'shortlog',
+  'cat-file',
+  'reflog',
+  'whatchanged',
+  'grep',
+  'help',
+  'version',
+  'var',
+  'check-ignore',
+  'count-objects',
+  'fsck',
+])
+
+// git global flags that consume the next argument as a value
+const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
+
+const COPY_MOVE_VALUE_OPTIONS = new Set(['-t', '--target-directory', '-S', '--suffix'])
+const INSTALL_VALUE_OPTIONS = new Set([
+  '-t',
+  '--target-directory',
+  '-m',
+  '--mode',
+  '-o',
+  '--owner',
+  '-g',
+  '--group',
+])
+const CHMOD_VALUE_OPTIONS = new Set(['--reference'])
+const CHOWN_VALUE_OPTIONS = new Set(['--from', '--reference'])
+const TOUCH_VALUE_OPTIONS = new Set(['-t', '-d', '-r', '--date', '--reference'])
+const MKDIR_VALUE_OPTIONS = new Set(['-m', '--mode'])
+
 type TargetClass = 'inside' | 'outside' | 'relative' | 'unresolvable'
 
 export function analyzeWorkspacePolicy(source: string, ctx: WorkspaceContext): PolicyResult {
@@ -226,6 +269,39 @@ function checkInvocation(
     checkRm(args, ctx, state)
     return
   }
+  if (name === 'cp' || name === 'mv' || name === 'install') {
+    // destination is the last positional; `-t DIR` / `--target-directory DIR`
+    // (and `install`'s mode/owner value flags) are consumed as values
+    const valueOptions = name === 'install' ? INSTALL_VALUE_OPTIONS : COPY_MOVE_VALUE_OPTIONS
+    checkCopyMove(args, valueOptions, ctx, state, name)
+    return
+  }
+  if (name === 'chmod') {
+    // first positional is the mode spec, the rest are files
+    for (const target of positionalArgs(args, CHMOD_VALUE_OPTIONS).slice(1)) {
+      checkWriteTarget(target, ctx, state, name)
+    }
+    return
+  }
+  if (name === 'chown') {
+    // first positional is the owner spec, the rest are files
+    for (const target of positionalArgs(args, CHOWN_VALUE_OPTIONS).slice(1)) {
+      checkWriteTarget(target, ctx, state, name)
+    }
+    return
+  }
+  if (name === 'touch') {
+    for (const target of positionalArgs(args, TOUCH_VALUE_OPTIONS)) checkWriteTarget(target, ctx, state, name)
+    return
+  }
+  if (name === 'mkdir' || name === 'rmdir') {
+    for (const target of positionalArgs(args, MKDIR_VALUE_OPTIONS)) checkWriteTarget(target, ctx, state, name)
+    return
+  }
+  if (name === 'git') {
+    checkGit(args, ctx, state)
+    return
+  }
   if (name === 'dd') {
     checkDd(args, ctx, state)
     return
@@ -234,7 +310,7 @@ function checkInvocation(
     checkSed(args, ctx, state)
     return
   }
-  if (name === 'rsync' || name === 'install' || name === 'ln') {
+  if (name === 'rsync' || name === 'ln') {
     const positionals = positionalArgs(args, new Set())
     const target = positionals.at(-1)
     if (target !== undefined) checkWriteTarget(target, ctx, state, name)
@@ -280,6 +356,66 @@ function checkInvocation(
   }
   if (ALWAYS_ESCALATE_INTERPRETERS.has(name)) {
     fail(state, name)
+  }
+}
+
+function checkCopyMove(
+  args: readonly string[],
+  valueOptions: ReadonlySet<string>,
+  ctx: WorkspaceContext,
+  state: State,
+  command: string,
+): void {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    if (arg === '--') break
+    if (arg === '-t' || arg === '--target-directory') {
+      const target = args[i + 1]
+      if (target !== undefined && !target.startsWith('-')) {
+        checkWriteTarget(target, ctx, state, command)
+        return
+      }
+    }
+    if (arg.startsWith('--target-directory=')) {
+      checkWriteTarget(arg.slice(arg.indexOf('=') + 1), ctx, state, command)
+      return
+    }
+  }
+  const rest = dropValueOptions(args, valueOptions)
+  const destination = rest.filter((arg) => arg !== '-' && !arg.startsWith('-')).at(-1)
+  if (destination !== undefined) checkWriteTarget(destination, ctx, state, command)
+}
+
+// `git -C <dir>` (and --git-dir/--work-tree) makes git operate on another
+// repository: read-only subcommands are fine there, everything else escalates.
+// In-workspace git commands are always allowed — git's own .git bookkeeping is
+// the recoverable path; the `.git` path rule only gates direct file access.
+function checkGit(args: readonly string[], ctx: WorkspaceContext, state: State): void {
+  let externalRepo = false
+  let subcommand: string | undefined
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    if (arg === '--') break
+    if (arg.startsWith('-')) {
+      if (arg.startsWith('--git-dir=') || arg.startsWith('--work-tree=')) {
+        const value = arg.slice(arg.indexOf('=') + 1)
+        externalRepo ||= isExternalTarget(value, ctx)
+        continue
+      }
+      if (arg.includes('=')) continue
+      if (GIT_VALUE_FLAGS.has(arg)) {
+        const value = args[i + 1]
+        if (value === undefined) break
+        if (arg !== '-c') externalRepo ||= isExternalTarget(value, ctx)
+        i += 1
+      }
+      continue
+    }
+    subcommand = arg
+    break
+  }
+  if (externalRepo && subcommand !== undefined && !GIT_READONLY_SUBCOMMANDS.has(subcommand)) {
+    fail(state, `git ${subcommand} on external repository`)
   }
 }
 
@@ -477,6 +613,12 @@ function classifyTarget(raw: string, ctx: WorkspaceContext): TargetClass {
   if (resolved === undefined) return 'unresolvable'
   if (path.isAbsolute(resolved)) return withinWorkspace(resolved, ctx.workspace) ? 'inside' : 'outside'
   return 'relative'
+}
+
+// Relative targets resolve against the workspace cwd, so they count as inside.
+function isExternalTarget(raw: string, ctx: WorkspaceContext): boolean {
+  const cls = classifyTarget(raw, ctx)
+  return cls === 'outside' || cls === 'unresolvable'
 }
 
 export function hasGitSegment(p: string): boolean {
