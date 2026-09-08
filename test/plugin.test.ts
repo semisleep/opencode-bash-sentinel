@@ -104,6 +104,17 @@ describe("bash gate", () => {
     expect(legacyReply).toHaveBeenCalledTimes(1)
   })
 
+  it("workspace-root and relative-escape writes are not approved", async () => {
+    const legacyReply = vi.fn()
+    const hooks = await BashSentinelPlugin(
+      makeInput({ client: { postSessionIdPermissionsPermissionId: legacyReply } }),
+      undefined,
+    )
+    await emit(hooks, askedEvent({ metadata: { command: "rm -rf ." } }))
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > ../outside" } }))
+    expect(legacyReply).not.toHaveBeenCalled()
+  })
+
   it("upstream dangerous commands still escalate", async () => {
     const hooks = await makePlugin()
     await emit(hooks, askedEvent({ metadata: { command: "sudo shutdown" } }))
@@ -161,15 +172,15 @@ describe("external_directory gate", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it("external writes escalate and are remembered for the bash follow-up", async () => {
+  it("external and bash permissions remain independent for dangerous commands", async () => {
     const hooks = await makePlugin()
     // 1. external ask for rm /tmp/x: policy says dangerous → no reply
     await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "rm /tmp/x" } }))
     expect(fetchMock).not.toHaveBeenCalled()
-    // 2. bash ask for the same command only happens after the human approved
-    //    the dialog → not asked twice
+    // 2. Approval of directory access is not treated as approval of the
+    //    command's separate bash risk, so the follow-up also stays with the human.
     await emit(hooks, askedEvent({ metadata: { command: "rm /tmp/x" } }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("external read + in-workspace write is approved", async () => {

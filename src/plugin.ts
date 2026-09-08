@@ -31,12 +31,6 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     input.worktree && input.worktree.length > 0 ? input.worktree : input.directory
   const ctx = defaultWorkspaceContext(workspace)
 
-  // When the external_directory dialog was shown for a command and the human
-  // approved it, the follow-up bash ask for the same command is auto-approved
-  // instead of prompting twice. Entries are only consumed when a bash ask
-  // actually arrives (which implies the external one was approved).
-  const externalEscalated = new Map<string, number>()
-
   void probeTransport(input, config)
 
   return {
@@ -59,13 +53,10 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     if (typeof command !== "string" || command.length === 0) return
 
     const verdict = policyVerdict(command)
-    const key = `${request.sessionID}\u0000${command}`
-    const consented = externalEscalated.get(key)
-    if (verdict !== undefined && consented === undefined) {
+    if (verdict !== undefined) {
       if (config.audit) void writeAudit(config.logPath, command, verdict, "escalate", "bash")
       return
     }
-    externalEscalated.delete(key)
 
     if (config.audit) void writeAudit(config.logPath, command, verdict, "approve", "bash")
     try {
@@ -83,11 +74,6 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
 
     const verdict = policyVerdict(command)
     if (verdict !== undefined) {
-      // Writes we cannot prove safe stay with the human. Remember the
-      // escalation so a later bash ask (which only fires after the human
-      // approved this dialog) is not asked twice.
-      externalEscalated.set(`${request.sessionID}\u0000${command}`, Date.now())
-      if (externalEscalated.size > 256) pruneExternal(externalEscalated)
       if (config.audit) void writeAudit(config.logPath, command, verdict, "escalate", "external_directory")
       return
     }
@@ -188,18 +174,6 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     const pattern = request.patterns?.[0]
     if (typeof pattern === "string") return path.resolve(ctx.workspace, pattern)
     return undefined
-  }
-}
-
-function pruneExternal(map: Map<string, number>): void {
-  const cutoff = Date.now() - 60_000
-  for (const [key, ts] of map) {
-    if (ts < cutoff) map.delete(key)
-  }
-  while (map.size > 256) {
-    const oldest = Array.from(map.entries()).sort((a, b) => a[1] - b[1])[0]
-    if (oldest === undefined) break
-    map.delete(oldest[0])
   }
 }
 

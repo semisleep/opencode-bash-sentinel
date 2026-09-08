@@ -57,6 +57,7 @@ describe("git external repository access", () => {
     dangerous("git -C /tmp/other-repo clean -fdx")
     dangerous("git -C~/other reset --hard")
     dangerous("git -C ~/other push")
+    dangerous("git -C ../other reset --hard")
     dangerous("sudo git -C /tmp/x commit -m x")
     dangerous("git --git-dir=/tmp/x/.git checkout main")
   })
@@ -185,6 +186,13 @@ describe("rm targets", () => {
     dangerous(`rm -rf ${WS}/`)
     dangerous(`rm -rf ${HOME}`)
     dangerous("rm -rf /")
+    dangerous("rm -rf .")
+    dangerous("rm -rf ./")
+  })
+
+  it("relative paths cannot escape the workspace", () => {
+    dangerous("rm ../neighbor/x")
+    dangerous("rm sub/../../neighbor/x")
   })
 
   it("unresolvable targets escalate (fail-safe)", () => {
@@ -192,6 +200,7 @@ describe("rm targets", () => {
     dangerous("rm -rf $HOME/important")
     dangerous("rm *.log")
     dangerous("rm -rf $(pwd)")
+    dangerous("rmdir $TARGET")
   })
 
   it(".git paths escalate", () => {
@@ -223,6 +232,7 @@ describe("write redirects", () => {
     dangerous("echo x > $(mktemp)")
     dangerous("echo x 2> /tmp/err")
     dangerous("some-cmd &> /tmp/all")
+    dangerous("echo x > ../outside")
   })
 
   it("inside workspace, relative, or device targets are fine", () => {
@@ -248,6 +258,8 @@ describe("write-command table (external gate blind spots)", () => {
     dangerous("sed -i s/a/b/ /etc/hosts")
     dangerous("sed --in-place s/a/b/ /etc/hosts")
     dangerous("sed -i s/a/b/ $F")
+    dangerous("sed -i --expression=s/a/b/ /etc/hosts")
+    dangerous("sed -i --file=rules.sed /etc/hosts")
   })
 
   it("dd of=", () => {
@@ -264,6 +276,7 @@ describe("write-command table (external gate blind spots)", () => {
   it("rsync / install / ln", () => {
     safe("rsync -a src/ dst/")
     dangerous("rsync -a src/ /tmp/backup/")
+    dangerous("rsync src/ /tmp/backup/ --log-file local.log")
     safe("install -m 755 tool bin/tool")
     dangerous("install -m 755 tool /usr/local/bin/tool")
     safe("ln -s target linkname")
@@ -291,6 +304,9 @@ describe("inline-code interpreters", () => {
     dangerous("perl -e 'print 1'")
     dangerous("php -r 'echo 1;'")
     dangerous("sudo python -c 'x'")
+    dangerous("python -cpass")
+    dangerous("node --eval='throw 1'")
+    dangerous(`perl -e'unlink "/tmp/x"'`)
   })
 
   it("running files and modules is allowed", () => {
@@ -329,14 +345,18 @@ describe("cd + relative write combination", () => {
   it("cd outside then relative write escalates", () => {
     dangerous("cd /tmp && echo x > out")
     dangerous("cd /tmp && rm file")
+    dangerous("cd /tmp && bash -c 'rm file'")
+    dangerous("cd /tmp && python script.py")
     dangerous("cd ~ && tee out.log")
     dangerous("cd $DIR && rm x")
     safe("cd") // bare cd changes cwd only; no write combined
+    dangerous("env --chdir=/tmp rm x")
   })
 
   it("cd inside workspace with writes is fine", () => {
     safe("cd sub && echo x > out")
     safe(`cd ${WS}/build && rm -rf .`)
+    safe("cd sub && bash -c 'rm file'")
     safe("cd sub && cat ../x > y")
   })
 
@@ -359,6 +379,8 @@ describe("compound and nested commands", () => {
     dangerous("eval 'echo x > /tmp/y'")
     safe("bash -c 'rm build'")
     safe("eval 'cat /etc/hosts'")
+    dangerous("bash --noprofile -c 'rm /tmp/x'")
+    dangerous("nohup nohup nohup nohup nohup nohup nohup nohup nohup rm /tmp/x")
   })
 
   it("command substitution bodies are analyzed", () => {

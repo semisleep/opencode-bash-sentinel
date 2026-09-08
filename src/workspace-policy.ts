@@ -57,6 +57,7 @@ const WRITE_COMMANDS = new Set([
   'chown',
   'touch',
   'mkdir',
+  'rmdir',
 ])
 
 const XARGS_BLOCKED_OPERANDS = new Set([
@@ -95,12 +96,12 @@ const XARGS_VALUE_OPTIONS = new Set([
 ])
 
 const INLINE_CODE_INTERPRETERS: Readonly<Record<string, readonly (string | RegExp)[]>> = {
-  python: ['-c'],
-  python3: ['-c'],
-  node: ['-e', '-p', '--eval', '--print'],
-  ruby: ['-e', /^-[a-zA-Z]*e$/],
-  perl: ['-e', /^-[a-zA-Z]*e$/],
-  php: ['-r', /^-[a-zA-Z]*r$/],
+  python: ['-c', /^-c.+/],
+  python3: ['-c', /^-c.+/],
+  node: ['-e', '-p', '--eval', '--print', /^-[ep].+/, /^--(?:eval|print)=/],
+  ruby: ['-e', /^-[a-zA-Z]*e(?:.+)?$/],
+  perl: ['-e', /^-[a-zA-Z]*e(?:.+)?$/],
+  php: ['-r', /^-[a-zA-Z]*r(?:.+)?$/],
 }
 
 // interpreters that execute a script file: the first positional operand is
@@ -184,6 +185,39 @@ const CHMOD_VALUE_OPTIONS = new Set(['--reference'])
 const CHOWN_VALUE_OPTIONS = new Set(['--from', '--reference'])
 const TOUCH_VALUE_OPTIONS = new Set(['-t', '-d', '-r', '--date', '--reference'])
 const MKDIR_VALUE_OPTIONS = new Set(['-m', '--mode'])
+const RSYNC_VALUE_OPTIONS = new Set([
+  '-e',
+  '-f',
+  '--address',
+  '--backup-dir',
+  '--block-size',
+  '--bwlimit',
+  '--compare-dest',
+  '--compress-level',
+  '--copy-dest',
+  '--exclude',
+  '--exclude-from',
+  '--files-from',
+  '--filter',
+  '--groupmap',
+  '--include',
+  '--include-from',
+  '--link-dest',
+  '--log-file',
+  '--log-file-format',
+  '--max-delete',
+  '--max-size',
+  '--min-size',
+  '--modify-window',
+  '--out-format',
+  '--password-file',
+  '--port',
+  '--rsync-path',
+  '--suffix',
+  '--temp-dir',
+  '--timeout',
+  '--usermap',
+])
 
 type TargetClass = 'inside' | 'outside' | 'relative' | 'unresolvable'
 
@@ -195,7 +229,7 @@ export function analyzeWorkspacePolicy(source: string, ctx: WorkspaceContext): P
   }
 }
 
-function analyzeTree(source: string, ctx: WorkspaceContext): PolicyResult {
+function analyzeTree(source: string, ctx: WorkspaceContext, initialCwd = ctx.workspace): PolicyResult {
   const parsed = parse(source, { timeoutMs: 500, maxNodes: 10_000 })
   if (!parsed.ok || parsed.hasError) return { verdict: { kind: 'unanalyzable' }, rmHandled: false }
 
@@ -204,6 +238,7 @@ function analyzeTree(source: string, ctx: WorkspaceContext): PolicyResult {
     rmHandled: false,
     relativeWrite: false,
     externalCd: false,
+    cwd: initialCwd,
   }
 
   const commands: SyntaxNode[] = []
@@ -235,6 +270,7 @@ interface State {
   rmHandled: boolean
   relativeWrite: boolean
   externalCd: boolean
+  cwd: string
 }
 
 function fail(state: State, command: string): void {
@@ -257,7 +293,8 @@ function checkInvocation(
   let args = rawArgs
   let dropped = invocationDropped
 
-  for (let hops = 0; hops < 8; hops += 1) {
+  let hops = 0
+  for (; hops < 8; hops += 1) {
     if (PRIVILEGE_WRAPPERS.has(name)) {
       const rest = dropValueOptions(args, PRIVILEGE_VALUE_OPTIONS)
       if (rest.length === 0) return
@@ -266,6 +303,7 @@ function checkInvocation(
       continue
     }
     if (LAUNCH_WRAPPERS.has(name)) {
+      if (name === 'env') markWrapperCwd(args, ctx, state)
       const rest = dropLaunchWrapperOperands(name, args)
       if (rest.length === 0) return
       name = normalizeCommandName(rest[0]!)
@@ -288,10 +326,21 @@ function checkInvocation(
     break
   }
 
+  if (
+    hops >= 8 &&
+    (PRIVILEGE_WRAPPERS.has(name) ||
+      LAUNCH_WRAPPERS.has(name) ||
+      name === 'busybox' ||
+      COMMAND_WRAPPER_NAMES.has(name))
+  ) {
+    fail(state, 'wrapper nesting limit exceeded')
+    return
+  }
+
   if (NESTED_SHELLS.has(name)) {
     const payload = nestedShellPayload(args)
     if (payload !== undefined) {
-      const nested = analyzeWorkspacePolicy(payload, ctx)
+      const nested = analyzeTree(payload, ctx, state.cwd)
       if (nested.verdict !== undefined) fail(state, verdictCommand(nested.verdict))
       state.rmHandled ||= nested.rmHandled
       return
@@ -308,7 +357,7 @@ function checkInvocation(
   }
   if (name === 'eval') {
     if (args.length > 0) {
-      const nested = analyzeWorkspacePolicy(args.join(' '), ctx)
+      const nested = analyzeTree(args.join(' '), ctx, state.cwd)
       if (nested.verdict !== undefined) fail(state, verdictCommand(nested.verdict))
       state.rmHandled ||= nested.rmHandled
     }
@@ -366,7 +415,8 @@ function checkInvocation(
     return
   }
   if (name === 'rsync' || name === 'ln') {
-    const positionals = positionalArgs(args, new Set())
+    const positionals =
+      name === 'rsync' ? positionalArgsAnywhere(args, RSYNC_VALUE_OPTIONS) : positionalArgs(args, new Set())
     const target = positionals.at(-1)
     if (target !== undefined) checkWriteTarget(target, ctx, state, name)
     return
@@ -391,11 +441,19 @@ function checkInvocation(
   if (name === 'cd' || name === 'pushd') {
     const target = positionalArgs(args, new Set())[0]
     if (target === undefined) {
+      state.cwd = ctx.homedir
+      if (!withinWorkspace(state.cwd, ctx.workspace)) state.externalCd = true
+      return
+    }
+    const resolved = resolveTarget(target, ctx)
+    if (resolved === undefined) {
       state.externalCd = true
       return
     }
-    const cls = classifyTarget(target, ctx)
-    if (cls === 'outside' || cls === 'unresolvable') state.externalCd = true
+    state.cwd = path.isAbsolute(resolved) ? resolved : path.resolve(state.cwd, resolved)
+    // Keep this sticky. The AST walk does not model whether later commands
+    // run (`cd /tmp || cd workspace; rm x`), so clearing it could fail open.
+    if (!withinWorkspace(state.cwd, ctx.workspace)) state.externalCd = true
     return
   }
   const inline = INLINE_CODE_INTERPRETERS[name]
@@ -490,18 +548,18 @@ function checkGit(args: readonly string[], ctx: WorkspaceContext, state: State):
     if (arg.startsWith('-')) {
       if (arg.startsWith('--git-dir=') || arg.startsWith('--work-tree=')) {
         const value = arg.slice(arg.indexOf('=') + 1)
-        externalRepo ||= isExternalTarget(value, ctx)
+        externalRepo ||= isExternalTarget(value, ctx, state.cwd)
         continue
       }
       if (/^-C.+/.test(arg)) {
-        externalRepo ||= isExternalTarget(arg.slice(2), ctx)
+        externalRepo ||= isExternalTarget(arg.slice(2), ctx, state.cwd)
         continue
       }
       if (arg.includes('=')) continue
       if (GIT_VALUE_FLAGS.has(arg)) {
         const value = args[i + 1]
         if (value === undefined) break
-        if (arg !== '-c') externalRepo ||= isExternalTarget(value, ctx)
+        if (arg !== '-c') externalRepo ||= isExternalTarget(value, ctx, state.cwd)
         i += 1
       }
       continue
@@ -528,18 +586,16 @@ function checkRm(args: readonly string[], ctx: WorkspaceContext, state: State): 
       fail(state, 'rm: .git path')
       continue
     }
-    if (path.isAbsolute(resolved)) {
-      if (resolved === '/' || resolved === ctx.homedir || resolved === ctx.workspace) {
-        fail(state, 'rm: workspace/home root target')
-        continue
-      }
-      if (!withinWorkspace(resolved, ctx.workspace)) {
-        fail(state, 'rm: outside workspace')
-        continue
-      }
-    } else {
-      state.relativeWrite = true
+    const absolute = path.isAbsolute(resolved) ? resolved : path.resolve(state.cwd, resolved)
+    if (absolute === '/' || absolute === ctx.homedir || absolute === ctx.workspace) {
+      fail(state, 'rm: workspace/home root target')
+      continue
     }
+    if (!withinWorkspace(absolute, ctx.workspace)) {
+      fail(state, 'rm: outside workspace')
+      continue
+    }
+    if (!path.isAbsolute(resolved)) state.relativeWrite = true
   }
 }
 
@@ -554,10 +610,21 @@ function checkDd(args: readonly string[], ctx: WorkspaceContext, state: State): 
 }
 
 function checkSed(args: readonly string[], ctx: WorkspaceContext, state: State): void {
-  const inPlace = args.some((arg) => arg === '--in-place' || arg.startsWith('--in-place=') || /^-[a-zA-Z]*i/.test(arg))
+  const inPlace = args.some(
+    (arg) => arg === '--in-place' || arg.startsWith('--in-place=') || /^-[a-zA-Z]*i/.test(arg),
+  )
   if (!inPlace) return
-  const targets = positionalArgs(args, new Set())
-  for (const target of targets.slice(1)) checkWriteTarget(target, ctx, state, 'sed')
+  const programOptions = new Set(['-e', '--expression', '-f', '--file'])
+  const hasExplicitProgram = args.some(
+    (arg) =>
+      programOptions.has(arg) ||
+      arg.startsWith('--expression=') ||
+      arg.startsWith('--file=') ||
+      /^-[ef].+/.test(arg),
+  )
+  const positionals = positionalArgsAnywhere(args, programOptions)
+  const targets = hasExplicitProgram ? positionals : positionals.slice(1)
+  for (const target of targets) checkWriteTarget(target, ctx, state, 'sed')
 }
 
 function checkWriteTarget(raw: string, ctx: WorkspaceContext, state: State, command: string): void {
@@ -570,13 +637,12 @@ function checkWriteTarget(raw: string, ctx: WorkspaceContext, state: State, comm
     fail(state, `${command}: .git write`)
     return
   }
-  if (path.isAbsolute(resolved)) {
-    if (!withinWorkspace(resolved, ctx.workspace)) {
-      fail(state, `${command}: write outside workspace`)
-    }
-  } else {
-    state.relativeWrite = true
+  const absolute = path.isAbsolute(resolved) ? resolved : path.resolve(state.cwd, resolved)
+  if (!withinWorkspace(absolute, ctx.workspace)) {
+    fail(state, `${command}: write outside workspace`)
+    return
   }
+  if (!path.isAbsolute(resolved)) state.relativeWrite = true
 }
 
 function checkRedirects(root: SyntaxNode, ctx: WorkspaceContext, state: State): void {
@@ -627,19 +693,27 @@ function checkScriptPath(
     fail(state, `${command}: script from stdin`)
     return
   }
-  const cls = classifyTarget(raw, ctx)
+  const cls = classifyTarget(raw, ctx, state.cwd)
   if (cls === 'outside' || cls === 'unresolvable') {
     fail(state, `${command}: script outside workspace`)
   }
 }
 
-function nestedShellPayload(args: readonly string[]): string | undefined {  let payloadIndex = -1
+function nestedShellPayload(args: readonly string[]): string | undefined {
+  let payloadIndex = -1
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!
     if (arg === '--') break
+    if (arg === '-O' || arg === '+O' || arg === '-o' || arg === '--rcfile' || arg === '--init-file') {
+      i += 1
+      continue
+    }
     if (/^-[a-zA-Z]+$/.test(arg)) {
       if (arg.includes('c')) payloadIndex = i + 1
-    } else {
+      continue
+    }
+    if (arg.startsWith('--')) continue
+    if (!arg.startsWith('+')) {
       break
     }
   }
@@ -747,6 +821,46 @@ function positionalArgs(args: readonly string[], valueOptions: ReadonlySet<strin
   return rest.filter((arg) => arg !== '-' && !arg.startsWith('-'))
 }
 
+function positionalArgsAnywhere(args: readonly string[], valueOptions: ReadonlySet<string>): string[] {
+  const out: string[] = []
+  let options = true
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    if (options && arg === '--') {
+      options = false
+      continue
+    }
+    if (options && arg.startsWith('-') && arg !== '-') {
+      if (!arg.includes('=') && valueOptions.has(arg)) i += 1
+      continue
+    }
+    out.push(arg)
+  }
+  return out
+}
+
+function markWrapperCwd(args: readonly string[], ctx: WorkspaceContext, state: State): void {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    let target: string | undefined
+    if (arg === '-C' || arg === '--chdir') {
+      target = args[i + 1]
+    } else if (arg.startsWith('--chdir=')) {
+      target = arg.slice('--chdir='.length)
+    } else if (/^-C.+/.test(arg)) {
+      target = arg.slice(2)
+    }
+    if (target !== undefined) {
+      const cls = classifyTarget(target, ctx)
+      // The wrapper-local cwd would otherwise have to be threaded through all
+      // nested command handlers. Until the command IR models that explicitly,
+      // fail closed instead of treating relative inner paths as workspace paths.
+      if (cls === 'outside' || cls === 'unresolvable') fail(state, 'env: chdir outside workspace')
+      return
+    }
+  }
+}
+
 function resolveTarget(raw: string, ctx: WorkspaceContext): string | undefined {
   let p = raw
   if (p === '~') p = ctx.homedir
@@ -759,16 +873,17 @@ function resolveTarget(raw: string, ctx: WorkspaceContext): string | undefined {
   return normalized
 }
 
-function classifyTarget(raw: string, ctx: WorkspaceContext): TargetClass {
+function classifyTarget(raw: string, ctx: WorkspaceContext, cwd = ctx.workspace): TargetClass {
   const resolved = resolveTarget(raw, ctx)
   if (resolved === undefined) return 'unresolvable'
   if (path.isAbsolute(resolved)) return withinWorkspace(resolved, ctx.workspace) ? 'inside' : 'outside'
+  if (!withinWorkspace(path.resolve(cwd, resolved), ctx.workspace)) return 'outside'
   return 'relative'
 }
 
-// Relative targets resolve against the workspace cwd, so they count as inside.
-function isExternalTarget(raw: string, ctx: WorkspaceContext): boolean {
-  const cls = classifyTarget(raw, ctx)
+// Relative targets resolve against the current abstract cwd.
+function isExternalTarget(raw: string, ctx: WorkspaceContext, cwd = ctx.workspace): boolean {
+  const cls = classifyTarget(raw, ctx, cwd)
   return cls === 'outside' || cls === 'unresolvable'
 }
 

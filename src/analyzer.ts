@@ -218,9 +218,16 @@ function analyzeInvocation(
     for (let i = 0; i < args.length; i += 1) {
       const arg = args[i]!;
       if (arg === '--') break;
+      if (arg === '-O' || arg === '+O' || arg === '-o' || arg === '--rcfile' || arg === '--init-file') {
+        i += 1;
+        continue;
+      }
       if (/^-[a-zA-Z]+$/.test(arg)) {
         if (arg.includes('c')) payloadIndex = i + 1;
-      } else {
+        continue;
+      }
+      if (arg.startsWith('--')) continue;
+      if (!arg.startsWith('+')) {
         break;
       }
     }

@@ -1,6 +1,6 @@
 # opencode-bash-sentinel
 
-AST-based bash command gate for [OpenCode](https://opencode.ai) — silently auto-approves provably safe commands, and escalates dangerous or un-analyzable ones to the native approval dialog.
+AST-based bash command gate for [OpenCode](https://opencode.ai) — silently auto-approves commands that satisfy its documented policy and trust model, and escalates dangerous or un-analyzable ones to the native approval dialog.
 
 The analysis engine is ported from Moonshot AI's open-source **Kimi Code** CLI (MIT): a pure-TypeScript bash parser (`tree-sitter-bash`-compatible syntax trees) plus its `dangerous-command-ask` policy, wrapped as an OpenCode plugin.
 
@@ -17,7 +17,7 @@ OpenCode's built-in bash permissions offer two extremes:
 | Static rules (`"bash": {"git status*": "allow"}`) | String-prefix/wildcard matching | Not semantic: unaware of wrappers (`sudo`, `env`, `sh -c`), pipes/compounds, or variable expansion. Fails open on unknown variants. |
 | `--auto` mode | Approve everything not denied | No risk analysis — a typo'd `rm -rf` sails through. |
 
-This plugin is the middle ground Kimi Code ships by default: parse the command into a syntax tree, classify it deterministically, auto-approve the provably-safe ones, and stop everything dangerous or opaque at the native dialog. The failure direction is **fail-safe**: risky constructs with un-resolvable operands (variables, globs, command substitution), unknown command names, malformed input, and parser timeouts are escalated to a human, never silently approved.
+This plugin is the middle ground Kimi Code ships by default: parse the command into a syntax tree, classify it deterministically, auto-approve commands accepted by the policy, and stop recognized dangerous or opaque constructs at the native dialog. The failure direction is **fail-safe for modeled operations**: unresolvable operands on recognized write commands, un-literal command names, opaque nested-shell payloads, malformed input, and parser timeouts are escalated to a human. Literal command names that have no dedicated rule are allowed; see the trust boundary below.
 
 ## How it works
 
@@ -46,7 +46,13 @@ On top of the path policy, the ported Kimi dangerous-command rules still apply e
 
 `git status`, `ls -la`, `rg foo src/`, `npm test`, `cat /etc/hosts`, `cd /tmp && ls`, `rm -rf build/`, `echo x > out.txt`, `sed -i s/a/b/ src/file.ts`, `python script.py` / `bash scripts/build.sh` (workspace scripts), `ssh`-free dev tooling, edits to any file inside the workspace — no keystrokes.
 
-If the native dialog asks about an external write and you approve it, the follow-up bash permission for the same command is approved automatically (no double-prompting).
+External-directory permission and Bash-risk permission are intentionally independent. A dangerous command that also accesses an external directory may therefore show two dialogs: approval of directory access is not treated as approval of the command's separate Bash risk.
+
+## Trust boundary and limitations
+
+This plugin is a permission heuristic, not a sandbox or a proof of a process's eventual effects. It analyzes the submitted Bash command line; it does not inspect or sandbox the contents of scripts, binaries, package hooks, build tools, or other programs that the command starts.
+
+In particular, workspace scripts such as `python script.py` and `bash scripts/build.sh`, and ordinary development commands such as `npm test` or `make`, are trusted when their command line itself contains no modeled dangerous effect. Such code can still write outside the workspace, delete files, access credentials, or perform network operations internally. Use OS/container sandboxing when the workspace or its executable contents are not trusted.
 
 ## Installation
 
@@ -100,7 +106,10 @@ The `permission` entries route every bash command and file edit through the appr
 
 - **`deny` rules always win.** Commands matched by a `deny` rule fail before the plugin is ever consulted.
 - **`"always allow" bypasses the plugin** for the rest of the session. If you answer "always" on a dialog, that pattern is approved without analysis afterwards.
-- **Known blind spots** (fail-open, by pragmatic design): commands that write through channels neither opencode's external-directory scan nor the write-command table sees — e.g. `awk '... > "file"'`, `tar -C`, package managers with `--prefix` — and symlink escapes (a literal path inside the workspace that is a symlink to outside). The audit log exists partly to spot these in practice.
+- **Known blind spots** (fail-open, by pragmatic design): literal commands without a dedicated rule, writes performed internally by an allowed script/tool, and command-specific channels neither OpenCode's external-directory scan nor the write-command table sees — e.g. dynamic `awk` redirection targets, `tar -C`, or package managers with `--prefix`.
+- **Workspace paths are lexical, not filesystem-canonical.** A literal path inside the workspace that traverses a symlink to an external target can escape the policy. Use a sandbox when this matters.
+- **Reads, network access, and data exfiltration are not governed by the write policy.** External reads run silently, and tools such as `curl`, `git push`, or custom CLIs can transmit data.
+- **Audit logs contain the complete command text.** When audit mode is enabled, command-line credentials or tokens are written to the configured log path.
 - **Path comparison is literal and case-sensitive**; macOS case-insensitive filesystems are not modeled.
 - **`pwsh`/`cmd` tools are out of scope** (bash analysis only).
 - **`--auto` mode makes this plugin moot** — in auto mode the TUI already approves everything.

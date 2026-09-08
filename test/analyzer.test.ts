@@ -126,6 +126,8 @@ describe("dangerous commands", () => {
     dangerous("eval rm -rf dir", "rm -rf")
     dangerous('bash -c "env rm -rf dir"', "rm -rf")
     dangerous("bash -c 'eval \"shutdown now\"'", "shutdown")
+    dangerous("bash --noprofile -c 'shutdown now'", "shutdown")
+    dangerous("bash -O extglob -c 'reboot'", "reboot")
   })
 
   it("busybox applets", () => {

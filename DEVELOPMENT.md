@@ -78,9 +78,8 @@ plugin on permission.asked:
         dangerous | unanalyzable                → do nothing (native dialog)
     permission === "external_directory":
         same verdict; safe → reply "once" (external reads become silent),
-        dangerous → remember sessionID+command so the bash follow-up
-        (which only fires after the human approved the dialog) is not
-        asked twice
+        dangerous → do nothing (native dialog); any later bash ask is
+        evaluated independently because directory consent is not bash consent
     permission === "edit":
         filepath inside workspace and not .git → reply "once"; else stay silent
 ```
@@ -89,12 +88,12 @@ plugin on permission.asked:
 
 Principle: **inside the workspace everything is allowed; outside, reads are allowed and writes require confirmation.** Enforced over the same syntax tree:
 
-- **rm**: positional targets classified as inside / outside / relative / unresolvable. Outside, unresolvable, `.git`, or the workspace/home/system root itself → dangerous. In-workspace rm of subpaths is safe regardless of flags (the upstream `rm -rf` verdict is suppressed via the `rmHandled` flag).
+- **rm**: positional targets are resolved against the current abstract cwd. Outside, unresolvable, `.git`, or the workspace/home/system root itself (including `.` at workspace root) → dangerous. In-workspace rm of subpaths is safe regardless of flags (the upstream `rm -rf` verdict is suppressed via the `rmHandled` flag).
 - **Write-command table** (commands opencode's external-directory scan never sees): `sed -i`, `dd of=`, `rsync`, `install`, `ln`, `tee`, `truncate`, `shred` — target extraction per command, same classification.
 - **Write redirects**: `>`, `>>`, `2>`, `&>`, `<>` targets classified the same way; `/dev/null`, `/dev/stdout`, `/dev/stderr` and fd numbers exempt; unresolvable targets (`> $OUT`) escalate. Note the parser shapes: `2> file` produces a named `file_descriptor` child that must be skipped when finding the target, and `{}` parses as a `concatenation` node.
 - **Escape hatches**: `find -delete/-exec*`, `xargs` whose operands include any write-capable command or shell, command wrappers (`time`/`timeout`/`watch`/`stdbuf`/`ionice` unwrap their inner command; `timeout` consumes one DURATION token), bare shells executing stdin/pipe scripts (`curl | sh`, `bash < x`, `bash <<EOF` — note heredoc nodes attach as siblings of `command` under `redirected_statement`), scripts from outside the workspace or unresolvable (`python /tmp/x.py`, `bash /tmp/x.sh`, `source`/`.`, `python -`, `python $SCRIPT`), inline-code interpreters (`python -c`, `node -e/-p`, `ruby -e`, `perl -e`, `php -r`, any `osascript`), remote execution (`ssh`/`scp`/`sftp` with operands), and `awk` programs matching `system(`, `> "`, or `| "` (scanned on raw arg text because programs contain `$` and get literal-dropped).
 - **Inline-code interpreters**: `python -c`, `node -e/-p/--eval`, `ruby -e`, `perl -e`, `php -r`, and any `osascript`. Running files / modules stays allowed.
-- **cd-combo**: any `cd`/`pushd` to an outside or unresolvable directory marks the tree; combined with any relative write target → dangerous.
+- **cwd tracking**: `cd`/`pushd` update an abstract cwd as commands are visited, and relative write/script/git targets resolve against it. Unresolvable cwd changes combined with a relative write escalate. An external or unresolvable `env -C`/`--chdir` fails closed until wrapper-local cwd is represented explicitly in the command IR.
 - Unresolvable operands on write commands (`rm $TARGET`) and un-literal command names escalate (fail-safe).
 - Wrappers (`sudo`/`env`/`nohup`/...), nested shells (`sh -c` payload re-analysis), `eval`, and `busybox` are unwrapped with the same machinery as the upstream analyzer.
 
