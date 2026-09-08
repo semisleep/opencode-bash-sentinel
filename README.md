@@ -33,7 +33,20 @@ Everything else (e.g. `git status`, `ls -la`, `rg foo src/`, `npm test`) runs wi
 
 ## Installation
 
-Verified against opencode 1.18.29 (release binary). Add to `opencode.json` (project) or `~/.config/opencode/opencode.json`:
+Verified against opencode 1.18.29 (release binary). Requires opencode >= 1.18.0.
+
+Add to your config — a project's `opencode.json`, or the global `~/.config/opencode/opencode.json` (`.jsonc` also works):
+
+**From a local checkout** (works today, changes take effect on next launch):
+
+```json
+{
+  "plugin": ["/absolute/path/to/opencode-bash-sentinel"],
+  "permission": { "bash": { "*": "ask" } }
+}
+```
+
+**From npm** (once published):
 
 ```json
 {
@@ -42,9 +55,7 @@ Verified against opencode 1.18.29 (release binary). Add to `opencode.json` (proj
 }
 ```
 
-The first entry installs the plugin from npm on demand. The second routes every bash command through the approval flow — the plugin then auto-replies to the safe ones in milliseconds (same mechanism OpenCode's own auto mode uses), so you only see a dialog when it matters.
-
-For local development, point `plugin` at a path instead: `"plugin": ["./path/to/opencode-bash-sentinel"]`.
+The `permission` entry routes every bash command through the approval flow — the plugin then auto-replies to the safe ones in milliseconds (same mechanism OpenCode's own auto mode uses), so you only see a dialog when it matters. Project-level `plugin`/`permission` config merges with the global config.
 
 ## Options
 
