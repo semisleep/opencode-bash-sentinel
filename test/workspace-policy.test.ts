@@ -108,6 +108,62 @@ describe("command wrappers (time/timeout/watch) and pipe-executed shells", () =>
   })
 })
 
+describe("external script execution", () => {
+  it("scripts outside the workspace or unresolvable escalate", () => {
+    dangerous("python /tmp/evil.py")
+    dangerous("python3 /tmp/x.py")
+    dangerous("node /tmp/x.js")
+    dangerous("bash /tmp/x.sh")
+    dangerous("sh /private/tmp/y.sh")
+    dangerous("zsh ~/evil.zsh")
+    dangerous("source /tmp/env")
+    dangerous(". /tmp/env")
+    dangerous("python $SCRIPT")
+    dangerous("python -") // stdin script
+    dangerous("bash <<'EOF'\nrm -rf /\nEOF")
+    dangerous("python <<'EOF'\nx = 1\nEOF")
+  })
+
+  it("workspace scripts stay silent", () => {
+    safe("python script.py")
+    safe("node server.js")
+    safe("bash scripts/build.sh")
+    safe("source .env")
+    safe("source venv/bin/activate")
+    safe(`python ${WS}/tool/run.py`)
+  })
+})
+
+describe("remote execution and copy", () => {
+  it("ssh/scp/sftp with operands escalate", () => {
+    dangerous("ssh host rm -rf /")
+    dangerous("ssh user@host 'reboot'")
+    dangerous("ssh -p 2222 host 'cat /etc/shadow'")
+    dangerous("scp file host:/tmp/")
+    dangerous("scp host:/etc/passwd .")
+    dangerous("sftp host")
+    dangerous("sudo ssh host halt")
+  })
+
+  it("bare ssh with no target is a no-op", () => {
+    safe("ssh")
+  })
+})
+
+describe("awk program escape hatches", () => {
+  it("system() and file redirection inside awk programs escalate", () => {
+    dangerous("awk 'system(\"rm /tmp/x\")' file")
+    dangerous(`awk '{print > "/tmp/out"}' f`)
+    dangerous(`awk '{ print | "sort > /tmp/x" }' f`)
+  })
+
+  it("plain awk usage stays silent", () => {
+    safe("awk '{print $1}' file")
+    safe("awk -F: '{print $2}' /etc/hosts")
+    safe("awk 'END {print NR}' log.txt")
+  })
+})
+
 describe("rm targets", () => {
   it("inside workspace auto-approved regardless of flags", () => {
     safe("rm file.txt")

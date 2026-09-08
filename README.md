@@ -37,14 +37,14 @@ On top of the path policy, the ported Kimi dangerous-command rules still apply e
 - Any write outside the workspace: `rm ~/.zshrc`, `sed -i s/a/b/ /etc/hosts`, `echo x > /tmp/out`, `sudo cp proj /usr/local/bin/x`, `env mv proj /tmp/`, `sudo chmod`/`chown`/`mkdir`/`touch` on external paths, `tee /tmp/log`, `rsync src/ /backup/`, `install`, `ln`, `truncate`, `shred`, `dd of=/tmp/img`
 - Mutating `git` on another repository: `git -C /elsewhere checkout`, `git --git-dir=...` (read-only subcommands like `git -C /elsewhere log` stay silent)
 - Redirects (`>`, `>>`, `2>`, `&>`) whose target is outside the workspace, unresolvable (`> $OUT`), or inside `.git`
-- Escape hatches: `find ... -delete` / `-exec`, `xargs rm`, inline-code interpreters (`python -c`, `node -e`, `ruby -e`, `php -r`, any `osascript`)
+- Escape hatches: `find ... -delete` / `-exec`, `xargs rm`, command wrappers (`time rm x`, `timeout 10 rm x`, `watch ...`), inline-code interpreters (`python -c`, `node -e`, `ruby -e`, `php -r`, any `osascript`), pipe-executed shells (`curl ... | sh`), scripts from outside the workspace (`python /tmp/x.py`, `bash /tmp/x.sh`, `source /tmp/env`, heredoc/stdin scripts), remote execution (`ssh host cmd`, `scp`), and `awk` programs using `system()` or file redirection
 - `cd` outside the workspace followed by a relative write (`cd /tmp && echo x > f`)
 - Catastrophic targets even inside the workspace: the workspace root itself, `~`, `/`, and `.git` paths
 - The upstream Kimi dangerous list: `sudo rm -rf ...`, `shutdown`, `reboot`, `mkfs*`, `init 0/6`, `systemctl poweroff`, `dd of=/dev/sda`, ...
 
 ## What runs silently (examples)
 
-`git status`, `ls -la`, `rg foo src/`, `npm test`, `cat /etc/hosts`, `cd /tmp && ls`, `rm -rf build/`, `echo x > out.txt`, `sed -i s/a/b/ src/file.ts`, edits to any file inside the workspace — no keystrokes.
+`git status`, `ls -la`, `rg foo src/`, `npm test`, `cat /etc/hosts`, `cd /tmp && ls`, `rm -rf build/`, `echo x > out.txt`, `sed -i s/a/b/ src/file.ts`, `python script.py` / `bash scripts/build.sh` (workspace scripts), `ssh`-free dev tooling, edits to any file inside the workspace — no keystrokes.
 
 If the native dialog asks about an external write and you approve it, the follow-up bash permission for the same command is approved automatically (no double-prompting).
 

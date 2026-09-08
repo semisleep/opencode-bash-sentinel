@@ -98,10 +98,34 @@ const INLINE_CODE_INTERPRETERS: Readonly<Record<string, readonly (string | RegEx
   python: ['-c'],
   python3: ['-c'],
   node: ['-e', '-p', '--eval', '--print'],
-  ruby: [/^-[a-zA-Z]*e$/, '--eval'],
-  perl: [/^-[a-zA-Z]*e$/],
+  ruby: ['-e', /^-[a-zA-Z]*e$/],
+  perl: ['-e', /^-[a-zA-Z]*e$/],
   php: ['-r', /^-[a-zA-Z]*r$/],
 }
+
+// interpreters that execute a script file: the first positional operand is
+// the script; running one from outside the workspace (or unresolvable, or
+// stdin/heredoc) escalates
+const SCRIPT_EXECUTORS: Readonly<Record<string, ReadonlySet<string>>> = {
+  python: new Set(['-m']),
+  python3: new Set(['-m']),
+  node: new Set(),
+  ruby: new Set(),
+  perl: new Set(),
+  php: new Set(),
+  source: new Set(),
+  '.': new Set(),
+}
+
+// remote-execution / remote-copy commands: any operand escalates
+const REMOTE_COMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
+  ssh: new Set(['-p', '-i', '-l', '-o', '-b', '-e', '-w', '-W', '-L', '-R', '-D', '-J', '-S']),
+  scp: new Set(['-P', '-i', '-o', '-F', '-l', '-d' ]),
+  sftp: new Set(['-P', '-i', '-o', '-b']),
+}
+
+// awk programs can execute commands or write files from inside the program
+const AWK_UNSAFE_PROGRAM = /system\s*\(|>{1,2}\s*['"]|\|\s*['"]/
 
 const ALWAYS_ESCALATE_INTERPRETERS = new Set(['osascript'])
 
@@ -200,7 +224,10 @@ function checkCommandNode(node: SyntaxNode, ctx: WorkspaceContext, state: State)
     fail(state, 'unresolvable command')
     return
   }
-  checkInvocation(invocation.name, invocation.args, ctx, state, invocation.dropped)
+  // heredocs attach as siblings of the command under redirected_statement
+  const siblings = node.parent?.children ?? []
+  if (siblings.some((child) => child.type === 'heredoc_redirect')) invocation.hasHeredoc = true
+  checkInvocation(invocation.name, invocation.args, ctx, state, invocation.dropped, invocation)
 }
 
 interface State {
@@ -224,6 +251,7 @@ function checkInvocation(
   ctx: WorkspaceContext,
   state: State,
   invocationDropped: boolean,
+  invocation: { rawArgTexts: readonly string[]; hasHeredoc: boolean },
 ): void {
   let name = rawName
   let args = rawArgs
@@ -268,11 +296,14 @@ function checkInvocation(
       state.rmHandled ||= nested.rmHandled
       return
     }
-    // `curl ... | sh`, `bash < script.sh`: a shell with no -c payload and no
-    // script operand executes whatever arrives on stdin — not analyzable
-    if (positionalArgs(args, new Set()).length === 0) {
-      fail(state, 'shell executes script from stdin (pipe)')
+    const operands = positionalArgs(args, new Set())
+    // `curl ... | sh`, `bash < script.sh`, `bash <<EOF`: a shell with no -c
+    // payload and no script operand executes whatever arrives on stdin
+    if (operands.length === 0) {
+      fail(state, 'shell executes script from stdin (pipe/heredoc)')
+      return
     }
+    checkScriptOperand(args, new Set(), dropped, ctx, state, name)
     return
   }
   if (name === 'eval') {
@@ -375,6 +406,35 @@ function checkInvocation(
         fail(state, `${name} inline code`)
         return
       }
+    }
+    if (invocation.hasHeredoc) {
+      fail(state, `${name} executes script from heredoc`)
+      return
+    }
+    checkScriptOperand(args, SCRIPT_EXECUTORS[name] ?? new Set(), dropped, ctx, state, name)
+    return
+  }
+  const scriptValueOptions = SCRIPT_EXECUTORS[name]
+  if (scriptValueOptions !== undefined) {
+    if (invocation.hasHeredoc) {
+      fail(state, `${name} executes script from heredoc`)
+      return
+    }
+    checkScriptOperand(args, scriptValueOptions, dropped, ctx, state, name)
+    return
+  }
+  const remoteValueOptions = REMOTE_COMMANDS[name]
+  if (remoteValueOptions !== undefined) {
+    if (positionalArgs(args, remoteValueOptions).length > 0) {
+      fail(state, `${name} remote execution/copy`)
+    }
+    return
+  }
+  if (name === 'awk' || name === 'gawk' || name === 'mawk') {
+    // the program text usually contains $-expansions, so scan raw argument
+    // text (which survives literal dropping) for unsafe program constructs
+    if (invocation.rawArgTexts.some((text) => AWK_UNSAFE_PROGRAM.test(text))) {
+      fail(state, 'awk program executes commands or writes files')
     }
     return
   }
@@ -554,6 +614,25 @@ function commandWrapperOperands(name: string, args: readonly string[]): string[]
   return rest
 }
 
+// Running a script that lives outside the workspace (or whose path cannot be
+// resolved) is arbitrary code execution — escalate. '-' means stdin.
+function checkScriptPath(
+  raw: string | undefined,
+  ctx: WorkspaceContext,
+  state: State,
+  command: string,
+): void {
+  if (raw === undefined) return
+  if (raw === '-') {
+    fail(state, `${command}: script from stdin`)
+    return
+  }
+  const cls = classifyTarget(raw, ctx)
+  if (cls === 'outside' || cls === 'unresolvable') {
+    fail(state, `${command}: script outside workspace`)
+  }
+}
+
 function nestedShellPayload(args: readonly string[]): string | undefined {  let payloadIndex = -1
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!
@@ -568,7 +647,9 @@ function nestedShellPayload(args: readonly string[]): string | undefined {  let 
   return args[payloadIndex]
 }
 
-function commandInvocationLoose(node: SyntaxNode): { name: string; args: string[]; dropped: boolean } | undefined {
+function commandInvocationLoose(
+  node: SyntaxNode,
+): { name: string; args: string[]; dropped: boolean; rawArgTexts: string[]; hasHeredoc: boolean } | undefined {
   const nameIndex = node.children.findIndex((child) => child.type === 'command_name')
   const nameNode = nameIndex >= 0 ? node.children[nameIndex] : undefined
   const nameWord = nameNode?.children.find((child) => child.isNamed)
@@ -576,9 +657,16 @@ function commandInvocationLoose(node: SyntaxNode): { name: string; args: string[
   if (rawName === undefined || rawName.length === 0) return undefined
   if (/[$`*?[\](){}]/.test(rawName)) return undefined
   const args: string[] = []
+  const rawArgTexts: string[] = []
   let dropped = false
+  let hasHeredoc = false
   for (const child of node.children.slice(nameIndex + 1)) {
-    if (child.type === 'variable_assignment' || child.type === 'heredoc_redirect') continue
+    if (child.type === 'variable_assignment') continue
+    if (child.type === 'heredoc_redirect') {
+      hasHeredoc = true
+      continue
+    }
+    rawArgTexts.push(child.text)
     const value = argText(child)
     if (value === undefined) {
       dropped = true
@@ -586,7 +674,26 @@ function commandInvocationLoose(node: SyntaxNode): { name: string; args: string[
       args.push(value)
     }
   }
-  return { name: normalizeCommandName(rawName), args, dropped }
+  return { name: normalizeCommandName(rawName), args, dropped, rawArgTexts, hasHeredoc }
+}
+
+function checkScriptOperand(
+  args: readonly string[],
+  valueOptions: ReadonlySet<string>,
+  dropped: boolean,
+  ctx: WorkspaceContext,
+  state: State,
+  name: string,
+): void {
+  if (args.includes('-')) {
+    fail(state, `${name}: script from stdin`)
+    return
+  }
+  if (args.length === 0 && dropped) {
+    fail(state, `${name}: unresolvable script operand`)
+    return
+  }
+  checkScriptPath(positionalArgs(args, valueOptions)[0], ctx, state, name)
 }
 
 // Like the analyzer's literalText, but keeps `~` (expanded later via homedir)
