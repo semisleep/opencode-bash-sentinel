@@ -105,6 +105,17 @@ const INLINE_CODE_INTERPRETERS: Readonly<Record<string, readonly (string | RegEx
 
 const ALWAYS_ESCALATE_INTERPRETERS = new Set(['osascript'])
 
+// command wrappers that execute the following token as a command
+const COMMAND_WRAPPERS: Readonly<Record<string, readonly string[]>> = {
+  time: [],
+  timeout: ['-k', '-s', '--signal', '--kill-after'],
+  watch: ['-n', '-g'],
+  stdbuf: [],
+  ionice: ['-c', '-p', '-n'],
+}
+
+const COMMAND_WRAPPER_NAMES = new Set(Object.keys(COMMAND_WRAPPERS))
+
 const FIND_DESTRUCTIVE_FLAGS = new Set(['-delete', '--delete', '-exec', '-execdir', '-ok', '-okdir'])
 
 // git subcommands that only read; anything else on an external repo escalates
@@ -239,6 +250,13 @@ function checkInvocation(
       args = args.slice(1)
       continue
     }
+    if (COMMAND_WRAPPER_NAMES.has(name)) {
+      const rest = commandWrapperOperands(name, args)
+      if (rest.length === 0) return
+      name = normalizeCommandName(rest[0]!)
+      args = rest.slice(1)
+      continue
+    }
     break
   }
 
@@ -248,6 +266,12 @@ function checkInvocation(
       const nested = analyzeWorkspacePolicy(payload, ctx)
       if (nested.verdict !== undefined) fail(state, verdictCommand(nested.verdict))
       state.rmHandled ||= nested.rmHandled
+      return
+    }
+    // `curl ... | sh`, `bash < script.sh`: a shell with no -c payload and no
+    // script operand executes whatever arrives on stdin — not analyzable
+    if (positionalArgs(args, new Set()).length === 0) {
+      fail(state, 'shell executes script from stdin (pipe)')
     }
     return
   }
@@ -376,6 +400,13 @@ function checkCopyMove(
         return
       }
     }
+    if (/^-[a-zA-Z]*t[a-zA-Z]*$/.test(arg) && arg !== '-t') {
+      const target = args[i + 1]
+      if (target !== undefined && !target.startsWith('-')) {
+        checkWriteTarget(target, ctx, state, command)
+        return
+      }
+    }
     if (arg.startsWith('--target-directory=')) {
       checkWriteTarget(arg.slice(arg.indexOf('=') + 1), ctx, state, command)
       return
@@ -400,6 +431,10 @@ function checkGit(args: readonly string[], ctx: WorkspaceContext, state: State):
       if (arg.startsWith('--git-dir=') || arg.startsWith('--work-tree=')) {
         const value = arg.slice(arg.indexOf('=') + 1)
         externalRepo ||= isExternalTarget(value, ctx)
+        continue
+      }
+      if (/^-C.+/.test(arg)) {
+        externalRepo ||= isExternalTarget(arg.slice(2), ctx)
         continue
       }
       if (arg.includes('=')) continue
@@ -509,8 +544,17 @@ function redirectTargetText(node: SyntaxNode): string | undefined {
   return argText(node)
 }
 
-function nestedShellPayload(args: readonly string[]): string | undefined {
-  let payloadIndex = -1
+// `time rm x`, `timeout 10 rm x`, `watch [-n 2] rm x`, ... — strip the
+// wrapper's own flags/value-options; `timeout` additionally consumes one
+// DURATION token before the command.
+function commandWrapperOperands(name: string, args: readonly string[]): string[] {
+  const valueOptions = new Set(COMMAND_WRAPPERS[name] ?? [])
+  let rest = dropValueOptions(args, valueOptions)
+  if (name === 'timeout') rest = rest.slice(1)
+  return rest
+}
+
+function nestedShellPayload(args: readonly string[]): string | undefined {  let payloadIndex = -1
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!
     if (arg === '--') break

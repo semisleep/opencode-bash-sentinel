@@ -184,7 +184,7 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
 
   function readFilepath(request: AskedEvent): unknown {
     const direct = request.metadata?.filepath
-    if (typeof direct === "string") return path.resolve(direct)
+    if (typeof direct === "string" && direct.length > 0) return path.resolve(ctx.workspace, direct)
     const pattern = request.patterns?.[0]
     if (typeof pattern === "string") return path.resolve(ctx.workspace, pattern)
     return undefined
