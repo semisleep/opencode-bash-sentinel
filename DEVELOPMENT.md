@@ -64,9 +64,9 @@ All file references are against `.reference/opencode`. These were read from sour
 
 ---
 
-## 3. Design: reverse mapping + workspace path policy
+## 3. Design: positive trust + workspace path policy
 
-Kimi's semantics: *default-approve everything, escalate dangerous/un-analyzable to ask.* OpenCode plugins can only answer requests already classified `ask`. So we invert the default:
+Kimi's analyzer remains a source of known-danger signals, but its native semantics are default-approve. The final policy engine must not inherit that default. OpenCode plugins can only answer requests already classified `ask`, so the plugin replies only after a separate positive-trust pass succeeds:
 
 ```
 opencode.json:  "permission": { "bash": {"*": "ask"}, "edit": {"*": "ask"} }
@@ -74,9 +74,9 @@ opencode.json:  "permission": { "bash": {"*": "ask"}, "edit": {"*": "ask"} }
 plugin on permission.asked:
     permission === "bash":
         parse command once
-        verdict = compose(workspacePolicy(ast), upstreamVerdict(ast))
-        safe                                    → reply "once"
-        dangerous | unanalyzable                → do nothing (native dialog)
+        decision = compose(workspacePolicy(ast), positiveTrust(ast), upstreamVerdict(ast))
+        explicitly trusted and path-safe        → reply "once"
+        unknown | dangerous | unanalyzable      → do nothing (native dialog)
     permission === "external_directory":
         same verdict; safe → reply "once" (external reads become silent),
         dangerous → do nothing (native dialog); any later bash ask is
@@ -87,25 +87,28 @@ plugin on permission.asked:
 
 ### Workspace path policy (`src/workspace-policy.ts` — ours, not ported)
 
-Principle: **inside the workspace everything is allowed; outside, reads are allowed and writes require confirmation.** Enforced over the same syntax tree:
+Principle: **only explicitly recognized commands are candidates for approval; recognized writes are allowed inside the workspace, while outside writes require confirmation.** Enforced over the same syntax tree:
 
 - **rm**: positional targets are resolved against the current abstract cwd. Outside, unresolvable, `.git`, or the workspace/home/system root itself (including `.` at workspace root) → dangerous. In-workspace rm of subpaths is safe regardless of flags (the workspace result explicitly sets `suppressUpstreamRmRf` to override upstream's path-blind rule).
 - **Write-command table** (commands opencode's external-directory scan never sees): `sed -i`, `dd of=`, `rsync`, `install`, `ln`, `tee`, `truncate`, `shred` — target extraction per command, same classification.
 - **Write redirects**: `>`, `>>`, `2>`, `&>`, `<>` targets classified the same way; `/dev/null`, `/dev/stdout`, `/dev/stderr` and fd numbers exempt; unresolvable targets (`> $OUT`) escalate. Note the parser shapes: `2> file` produces a named `file_descriptor` child that must be skipped when finding the target, and `{}` parses as a `concatenation` node.
-- **Escape hatches**: `find -delete/-exec*`, `xargs` whose operands include any write-capable command or shell, command wrappers (`time`/`timeout`/`watch`/`stdbuf`/`ionice` unwrap their inner command; `timeout` consumes one DURATION token), bare shells executing stdin/pipe scripts (`curl | sh`, `bash < x`, `bash <<EOF` — note heredoc nodes attach as siblings of `command` under `redirected_statement`), scripts from outside the workspace or unresolvable (`python /tmp/x.py`, `bash /tmp/x.sh`, `source`/`.`, `python -`, `python $SCRIPT`), inline-code interpreters (`python -c`, `node -e/-p`, `ruby -e`, `perl -e`, `php -r`, any `osascript`), remote execution (`ssh`/`scp`/`sftp` with operands), and `awk` programs matching `system(`, `> "`, or `| "` (scanned on raw arg text because programs contain `$` and get literal-dropped).
+- **Escape hatches**: `find -delete/-exec*` and file-output actions, `xargs` whose operands include any write-capable command or shell, `rsync` output/temporary paths and remote destinations, command wrappers (`time`/`timeout`/`watch`/`stdbuf`/`ionice` unwrap their inner command; `timeout` consumes one DURATION token), bare shells executing stdin/pipe scripts (`curl | sh`, `bash < x`, `bash <<EOF` — note heredoc nodes attach as siblings of `command` under `redirected_statement`), scripts from outside the workspace or unresolvable (`python /tmp/x.py`, `bash /tmp/x.sh`, `source`/`.`, `python -`, `python $SCRIPT`), inline-code interpreters (`python -c`, `node -e/-p`, `ruby -e`, `perl -e`, `php -r`, any `osascript`), remote execution (`ssh`/`scp`/`sftp` with operands), and `awk` programs containing `system(`, output redirection, or command pipes.
 - **Inline-code interpreters**: `python -c`, `node -e/-p/--eval`, `ruby -e`, `perl -e`, `php -r`, and any `osascript`. Running files / modules stays allowed.
 - **cwd tracking**: `cd`/`pushd` update a conservative set of possible cwd values. Conditional lists, branches, loops, command substitutions, functions, and subshells retain alternate cwd states; a relative path must be safe from every possible cwd. Unresolvable cwd changes combined with a relative write escalate. External or unresolvable `env -C`/`--chdir` and `sudo -D`/`--chdir` fail closed.
 - **External-directory confidence**: the workspace pass also reports whether every command's external-path behavior has an explicit model. The external gate auto-approves only when the normal verdict is safe and this confidence bit is true; unknown tools and unmodeled script execution stay with the human.
+- **Positive Bash confidence**: the workspace pass independently reports whether every executable has a positive trust rule. Literal-but-unknown commands, untrusted executable paths such as `/tmp/ls`, unrecognized `git` subcommands, and arbitrary environment assignments clear this bit. The Bash gate never approves when it is false.
+- **Executable identity**: bare allowlisted command names and executable paths in `/bin`, `/sbin`, `/usr/bin`, or `/usr/sbin` may use the named rule. Other path-qualified executables ask unless they resolve lexically inside the workspace, which is the documented workspace-script trust boundary.
+- **Explicit exceptions**: workspace scripts/executables and the finite `TRUSTED_DEVELOPMENT_COMMANDS` list are trusted without inspecting their contents, hooks, or project configuration. Symlink targets are also not canonicalized. These limitations must remain visible in README.
 - Unresolvable operands on write commands (`rm $TARGET`) and un-literal command names escalate (fail-safe).
 - Wrappers (`sudo`/`env`/`nohup`/...), nested shells (`sh -c` payload re-analysis), `eval`, and `busybox` are unwrapped with the same machinery as the upstream analyzer.
 
-`{ upstream: true }` plugin option disables all of this and restores verbatim Kimi behavior.
+The former `{ upstream: true }` escape hatch was removed because it disabled these invariants. Passing that legacy option is ignored.
 
 ### Failure modes
 
 - Analyzer throws / parser times out → treated as `unanalyzable` → left to the human (fail-safe). The upstream parser already converts budget exhaustion to `{ ok: false, reason: 'aborted' }` and internal bugs to a degraded `hasError` tree (`parse.ts`).
 - Reply race (human answered first) → `NotFoundError` → catch, ignore.
-- Only handle `permission === "bash"`; ignore every other event type.
+- Handle `bash`, `external_directory`, and `edit`; ignore unrelated permission and event types.
 
 ---
 
@@ -186,7 +189,7 @@ opencode-bash-sentinel/
 
 ## 6. Test plan
 
-**Analyzer unit tests** (table-driven, `vitest`) — expected verdicts: `undefined` = safe (auto-approve), `dangerous`, `unanalyzable`:
+**Upstream-analyzer unit tests** (table-driven, `vitest`) — `undefined` means only “the upstream dangerous list did not match”; it is not a final auto-approval decision. Final decisions are tested through the policy engine/plugin:
 
 | Command | Expected verdict |
 |---|---|
@@ -214,7 +217,7 @@ opencode-bash-sentinel/
 
 **Parser tests**: port upstream's `parse.test.ts` / `parser-compound.test.ts` directly. The differential (`differential.test.ts`) and fuzz tests need real `tree-sitter-bash` as a devDep — optional.
 
-**Plugin glue tests** (mocked `fetch`/client, `test/plugin.test.ts`): safe command → exactly one approval through the expected transport; dangerous/unanalyzable → zero replies; reply rejection swallowed; non-bash events ignored; legacy `metadata.input.command` fallback; basic-auth header; audit JSONL on/off.
+**Plugin glue tests** (mocked `fetch`/client, `test/plugin.test.ts`): positively trusted command → exactly one approval through the expected transport; unknown/dangerous/unanalyzable → zero replies; unknown literal commands, untrusted executable paths, remote git, environment assignments, `find`/`rsync` output channels; documented workspace-script/development-tool exceptions; reply rejection swallowed; unrelated events ignored; legacy `metadata.input.command` fallback; basic-auth header; audit JSONL on/off.
 
 **Integration test** — deterministic, no LLM account needed. This was the method actually used to verify opencode 1.18.29:
 
@@ -259,8 +262,8 @@ Scenarios still worth adding: human answers the TUI dialog before the plugin (ra
 
 ## 8. Out of scope / future work
 
-- Non-bash permissions (`edit`, `webfetch`, `external_directory`, ...) — leave to opencode rules.
+- Other permissions beyond `bash`, `edit`, and `external_directory` remain under opencode rules.
 - Kimi's other policies (git-cwd-write-approve, sensitive-file-access-ask) could be ported later the same way.
 - An optional "observe mode" (log what would be approved, approve nothing) for a burn-in period.
-- Stricter-than-upstream option: escalate generic commands with opaque operands (`cat $FILE`, `ls *.md`). Upstream deliberately approves these (see their heredoc regression test); changing the default must be deliberate, opt-in, and documented.
+- Expand positive command coverage conservatively. Each addition needs tests for command-specific write/exec options; an unknown command or uncertain effect must continue to ask.
 - Track upstream: watch for the `permission.ask` plugin hook being wired up (would allow a cleaner forward-mapping design) and for stabilization of the experimental HttpApi reply route.

@@ -8,6 +8,8 @@ const policy = (command: string) => analyzeWorkspacePolicy(command, ctx)
 const safe = (command: string) => expect(policy(command).verdict).toBeUndefined()
 
 const dangerous = (command: string) => expect(policy(command).verdict?.kind).toBe("dangerous")
+const trusted = (command: string) => expect(policy(command).commandTrusted).toBe(true)
+const untrusted = (command: string) => expect(policy(command).commandTrusted).toBe(false)
 
 const WS = "/Users/dev/project"
 const HOME = process.platform === "win32" ? "C:\\Users\\dev" : "/Users/dev"
@@ -84,6 +86,10 @@ describe("git external repository access", () => {
     dangerous("git config --global user.name sentinel")
     dangerous("git config --system user.name sentinel")
     dangerous("git -C /tmp/repo log --output=/tmp/log.txt")
+    dangerous("git init /tmp/new-repo")
+    dangerous("git init -b main /tmp/new-repo")
+    dangerous("git init --separate-git-dir=/tmp/meta new-repo")
+    safe("git init new-repo")
     safe("git log --output=build/log.txt")
   })
 })
@@ -287,6 +293,17 @@ describe("write-command table (external gate blind spots)", () => {
     safe("rsync -a src/ dst/")
     dangerous("rsync -a src/ /tmp/backup/")
     dangerous("rsync src/ /tmp/backup/ --log-file local.log")
+    dangerous("rsync src/ dst/ --log-file=/tmp/rsync.log")
+    dangerous("rsync -e ssh src/ host:/tmp/dst")
+    dangerous("rsync host:/tmp/src dst/")
+    dangerous("rsync --remove-source-files /tmp/src dst/")
+    dangerous("rsync src/ dst/ --write-batch=/tmp/update")
+    dangerous("rsync src/ /tmp/dst --write-batch build/update")
+    safe("rsync src/ dst/ --log-file=build/rsync.log")
+    dangerous("ln -s -t /tmp src/file")
+    dangerous("ln -s -t/tmp src/file")
+    dangerous("cp -t/tmp src/file")
+    safe("ln -s -t build src/file")
     safe("install -m 755 tool bin/tool")
     dangerous("install -m 755 tool /usr/local/bin/tool")
     safe("ln -s target linkname")
@@ -339,6 +356,8 @@ describe("find / xargs escape hatches", () => {
     dangerous("find . -name '*.log' -delete")
     dangerous("find / -exec rm {} ;")
     dangerous("find . -execdir sh -c 'x' ;")
+    dangerous("find . -fprint /tmp/files.txt")
+    safe("find . -fprint build/files.txt")
   })
 
   it("xargs invoking write-capable commands escalates", () => {
@@ -348,6 +367,10 @@ describe("find / xargs escape hatches", () => {
     dangerous("find . | xargs sh -c 'echo $0'")
     safe("git ls-files | xargs cat")
     safe("ls | xargs wc -l")
+    trusted("command -v totally-unknown-command")
+    untrusted("command love")
+    untrusted("find . | xargs totally-unknown-command")
+    untrusted("find . | xargs /tmp/cat")
     dangerous("find . $ACTION")
     dangerous("xargs $CMD")
   })
@@ -361,9 +384,46 @@ describe("environment-sensitive execution", () => {
     dangerous("PATH=/tmp/bin tool")
   })
 
-  it("ordinary local assignments remain allowed by the bash gate", () => {
+  it("ordinary local assignments have unknown command semantics", () => {
     safe("FOO=bar echo ok")
     safe("env FOO=bar echo ok")
+    untrusted("FOO=bar echo ok")
+    untrusted("env FOO=bar echo ok")
+  })
+})
+
+describe("positive Bash trust", () => {
+  it("trusts explicitly modeled commands and documented developer tools", () => {
+    trusted("git status")
+    trusted("ls -la")
+    trusted("rm -rf build")
+    trusted("npm test")
+    trusted("python script.py")
+    trusted("./scripts/check")
+  })
+
+  it("does not trust unknown commands, remote git operations, or lookalike paths", () => {
+    untrusted("totally-unknown-command --flag")
+    untrusted("curl https://example.invalid")
+    untrusted("git push")
+    untrusted("git -c alias.status='!evil' status")
+    untrusted("git $SUBCOMMAND")
+    untrusted("awk $PROGRAM file")
+    untrusted("/tmp/ls -la")
+  })
+
+  it("escalates execution and output options on otherwise trusted readers", () => {
+    dangerous("rg --pre ./scripts/filter pattern files")
+    dangerous("rg --hostname-bin ./scripts/hostname pattern")
+    dangerous("file --compile -m magic")
+    dangerous("sed 'e rm -rf /tmp/x' file")
+    dangerous("sed '/match/e rm /tmp/x' file")
+    dangerous("sed -n 'w /tmp/out' file")
+    dangerous("sed 's/a/b/e' file")
+    dangerous("sed 's/a/b/w /tmp/out' file")
+    untrusted("sed -f scripts/program.sed file")
+    dangerous("install --strip-program=/tmp/strip tool bin/tool")
+    dangerous("install -s tool bin/tool")
   })
 })
 
@@ -375,6 +435,7 @@ describe("cd + relative write combination", () => {
     dangerous("cd /tmp && python script.py")
     dangerous("cd ~ && tee out.log")
     dangerous("cd $DIR && rm x")
+    dangerous("cd $DIR && ls")
     safe("cd") // bare cd changes cwd only; no write combined
     dangerous("env --chdir=/tmp rm x")
   })

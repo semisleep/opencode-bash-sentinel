@@ -108,8 +108,8 @@ export type DangerousVerdict =
   | { readonly kind: 'unanalyzable' };
 
 /**
- * Analyze a bash command string.
- * - `undefined` — provably safe, may be auto-approved
+ * Analyze a bash command string using the upstream dangerous-command rules.
+ * - `undefined` — no upstream danger rule matched; not a final allow decision
  * - `{ kind: 'dangerous' }` — provably risky, escalate to the human
  * - `{ kind: 'unanalyzable' }` — cannot prove safety, escalate to the human
  * Never throws: parser failures degrade to `unanalyzable`.

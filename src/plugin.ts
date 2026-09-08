@@ -2,14 +2,12 @@ import type { Plugin } from "@opencode-ai/plugin"
 import os from "node:os"
 import path from "node:path"
 import type { DangerousVerdict } from "./analyzer"
-import { analyzeCommandPolicy, type PolicyGate } from "./policy-engine"
+import { analyzeCommandPolicy, type PolicyDecision, type PolicyGate } from "./policy-engine"
 import { defaultWorkspaceContext, hasGitSegment, withinWorkspace } from "./workspace-policy"
 
 export interface BashSentinelOptions {
   audit?: boolean
   logPath?: string
-  /** Revert to the verbatim upstream Kimi policy (workspace path rules disabled). */
-  upstream?: boolean
 }
 
 const DEFAULT_LOG_PATH = "~/.local/share/opencode/bash-sentinel-audit.jsonl"
@@ -44,8 +42,8 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
       const request = properties as AskedEvent
 
       if (request.permission === "bash") return handleBash(request)
-      if (request.permission === "external_directory" && !config.upstream) return handleExternal(request)
-      if (request.permission === "edit" && !config.upstream) return handleEdit(request)
+      if (request.permission === "external_directory") return handleExternal(request)
+      if (request.permission === "edit") return handleEdit(request)
     },
   }
 
@@ -53,13 +51,13 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     const command = readCommand(request)
     if (typeof command !== "string" || command.length === 0) return
 
-    const verdict = policyVerdict(command, "bash")
-    if (verdict !== undefined) {
-      if (config.audit) void writeAudit(config.logPath, command, verdict, "escalate", "bash")
+    const decision = policyDecision(command, "bash")
+    if (decision.action === "ask") {
+      if (config.audit) void writeAudit(config.logPath, command, decision.verdict, "escalate", "bash", decision.reason)
       return
     }
 
-    if (config.audit) void writeAudit(config.logPath, command, verdict, "approve", "bash")
+    if (config.audit) void writeAudit(config.logPath, command, undefined, "approve", "bash")
     try {
       await replyOnce(request)
     } catch {
@@ -73,13 +71,15 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     const command = readCommand(request)
     if (typeof command !== "string" || command.length === 0) return
 
-    const verdict = policyVerdict(command, "external_directory")
-    if (verdict !== undefined) {
-      if (config.audit) void writeAudit(config.logPath, command, verdict, "escalate", "external_directory")
+    const decision = policyDecision(command, "external_directory")
+    if (decision.action === "ask") {
+      if (config.audit) {
+        void writeAudit(config.logPath, command, decision.verdict, "escalate", "external_directory", decision.reason)
+      }
       return
     }
 
-    if (config.audit) void writeAudit(config.logPath, command, verdict, "approve", "external_directory")
+    if (config.audit) void writeAudit(config.logPath, command, undefined, "approve", "external_directory")
     try {
       await replyOnce(request)
     } catch {
@@ -109,8 +109,8 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     }
   }
 
-  function policyVerdict(command: string, gate: PolicyGate): DangerousVerdict | undefined {
-    return analyzeCommandPolicy(command, ctx, { upstream: config.upstream, gate })
+  function policyDecision(command: string, gate: PolicyGate): PolicyDecision {
+    return analyzeCommandPolicy(command, ctx, { gate })
   }
 
   async function replyOnce(request: AskedEvent): Promise<void> {
@@ -181,12 +181,11 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
   }
 }
 
-function parseOptions(options: unknown): { audit: boolean; logPath: string; upstream: boolean } {
+function parseOptions(options: unknown): { audit: boolean; logPath: string } {
   const raw = (options ?? {}) as BashSentinelOptions
   return {
     audit: raw.audit === true,
     logPath: typeof raw.logPath === "string" && raw.logPath.length > 0 ? raw.logPath : DEFAULT_LOG_PATH,
-    upstream: raw.upstream === true,
   }
 }
 
@@ -263,6 +262,7 @@ async function writeAudit(
   verdict: DangerousVerdict | undefined,
   action: string,
   gate: string,
+  reason?: string,
 ) {
   try {
     const resolved = logPath.replace(/^~/, os.homedir())
@@ -273,6 +273,7 @@ async function writeAudit(
         command,
         verdict: verdict === undefined ? "safe" : verdict.kind,
         detail: verdict === undefined ? undefined : verdict.kind === "dangerous" ? verdict.command : verdict.kind,
+        reason,
         action,
       }) + "\n"
     const fs = await import("fs/promises")

@@ -17,7 +17,7 @@ OpenCode's built-in bash permissions offer two extremes:
 | Static rules (`"bash": {"git status*": "allow"}`) | String-prefix/wildcard matching | Not semantic: unaware of wrappers (`sudo`, `env`, `sh -c`), pipes/compounds, or variable expansion. Fails open on unknown variants. |
 | `--auto` mode | Approve everything not denied | No risk analysis — a typo'd `rm -rf` sails through. |
 
-This plugin is the middle ground Kimi Code ships by default: parse the command into a syntax tree, classify it deterministically, auto-approve commands accepted by the policy, and stop recognized dangerous or opaque constructs at the native dialog. The failure direction is **fail-safe for modeled operations**: unresolvable operands on recognized write commands, un-literal command names, opaque nested-shell payloads, malformed input, and parser timeouts are escalated to a human. Literal command names that have no dedicated rule are allowed; see the trust boundary below.
+This plugin parses each command into a syntax tree and applies a positive trust policy. It auto-approves only when every executable is explicitly recognized and every modeled effect satisfies the workspace policy. Unknown commands, untrusted executable paths, opaque constructs, malformed input, and parser failures stay at the native approval dialog. The final decision is **default-deny**: absence of a known danger is not evidence of safety.
 
 ## How it works
 
@@ -25,12 +25,13 @@ The plugin enforces one principle over every bash command, external-directory re
 
 | | Inside your workspace | Outside your workspace |
 |---|---|---|
-| **Read** | runs silently | runs silently |
-| **Write** | runs silently | **you get the native approval dialog** |
+| **Recognized read** | runs silently | runs silently |
+| **Recognized write** | runs silently | **you get the native approval dialog** |
+| **Unknown/unmodeled** | **you get the native approval dialog** | **you get the native approval dialog** |
 
 "Workspace" is your project directory (git worktree when available). Writes to `.git`, workspace/home/system root targets (`rm -rf ./` on the workspace itself, `~`, `/`), and unresolvable targets (`rm $TARGET`) always escalate — fail-safe.
 
-On top of the path policy, the ported Kimi dangerous-command rules still apply everywhere: `sudo`/`env`/`sh -c`/`busybox` wrappers are unwrapped recursively, `shutdown`/`mkfs*`/`dd`-to-raw-devices and friends escalate regardless of path, and commands the analyzer cannot prove safe (un-literal command names, opaque nested-shell payloads, parser timeouts) escalate instead of guessing.
+On top of the path policy, the ported Kimi dangerous-command rules still apply everywhere: `sudo`/`env`/`sh -c`/`busybox` wrappers are unwrapped recursively, and `shutdown`/`mkfs*`/`dd`-to-raw-devices and friends escalate regardless of path. The positive trust pass then rejects anything that was not explicitly recognized, including literal but unknown command names.
 
 ## What gets escalated (examples)
 
@@ -41,12 +42,14 @@ On top of the path policy, the ported Kimi dangerous-command rules still apply e
 - `cd` outside the workspace followed by a relative write (`cd /tmp && echo x > f`)
 - Sensitive environment assignments that can redirect execution or storage (`GIT_DIR`, `GIT_WORK_TREE`, `HOME`, `PATH`, `BASH_ENV`, `LD_PRELOAD`, ...)
 - External-directory requests from commands whose path effects are not explicitly modeled (`curl -o`, `tar -C`, custom CLIs, package managers, ...)
+- Unknown commands and executable lookalikes outside the workspace (`custom-cli`, `/tmp/ls`), unrecognized `git` subcommands and remote operations such as `git push`, and environment-prefixed commands whose behavior cannot be proven (`FOO=bar tool`)
+- Command-specific output/escape channels such as `find -fprint /tmp/out`, remote `rsync`, `rsync --log-file=/tmp/log`, sed `e`/`w` programs, `rg --pre`, `file --compile`, and `install --strip-program`
 - Catastrophic targets even inside the workspace: the workspace root itself, `~`, `/`, and `.git` paths
 - The upstream Kimi dangerous list: `sudo rm -rf ...`, `shutdown`, `reboot`, `mkfs*`, `init 0/6`, `systemctl poweroff`, `dd of=/dev/sda`, ...
 
 ## What runs silently (examples)
 
-`git status`, `ls -la`, `rg foo src/`, `npm test`, `cat /etc/hosts`, `cd /tmp && ls`, `rm -rf build/`, `echo x > out.txt`, `sed -i s/a/b/ src/file.ts`, `python script.py` / `bash scripts/build.sh` (workspace scripts), `ssh`-free dev tooling, edits to any file inside the workspace — no keystrokes.
+`git status`, `ls -la`, `rg foo src/`, `npm test`, `cat /etc/hosts`, `cd /tmp && ls`, `rm -rf build/`, `echo x > out.txt`, `sed -i s/a/b/ src/file.ts`, `python script.py` / `bash scripts/build.sh` / `./scripts/check` (workspace scripts), explicitly listed development tools, and edits to lexical paths inside the workspace — no keystrokes.
 
 External-directory permission and Bash-risk permission are intentionally independent. A dangerous command that also accesses an external directory may therefore show two dialogs: approval of directory access is not treated as approval of the command's separate Bash risk.
 
@@ -54,7 +57,9 @@ External-directory permission and Bash-risk permission are intentionally indepen
 
 This plugin is a permission heuristic, not a sandbox or a proof of a process's eventual effects. It analyzes the submitted Bash command line; it does not inspect or sandbox the contents of scripts, binaries, package hooks, build tools, or other programs that the command starts.
 
-In particular, workspace scripts such as `python script.py` and `bash scripts/build.sh`, and ordinary development commands such as `npm test` or `make`, are trusted when their command line itself contains no modeled dangerous effect. Such code can still write outside the workspace, delete files, access credentials, or perform network operations internally. Use OS/container sandboxing when the workspace or its executable contents are not trusted.
+Two deliberate exceptions remain. First, workspace scripts and executables such as `python script.py`, `bash scripts/build.sh`, and `./scripts/check` are trusted without inspecting their contents. Second, a finite allowlist of common development tools (`npm`, `pnpm`, `yarn`, `bun`, `make`, `cargo`, `go`, test/format/lint tools, and similar entries in the source policy) is trusted without inspecting project hooks or configuration. Such code can still write outside the workspace, delete files, access credentials, or use the network internally. These are explicit trust boundaries, not analyzer proofs; use OS/container sandboxing when the workspace is not trusted.
+
+Workspace containment is currently lexical. A workspace path that traverses a symlink to an external target is still treated as inside the workspace. This is the other known containment limitation and is not resolved by the default-deny command policy.
 
 ## Installation
 
@@ -86,7 +91,7 @@ Add to your config — a project's `opencode.json`, or the global `~/.config/ope
 }
 ```
 
-The `permission` entries route every bash command and file edit through the approval flow — the plugin then auto-replies to the safe ones in milliseconds (same mechanism OpenCode's own auto mode uses), so you only see a dialog when it matters. `edit` routing is optional but recommended: without it, in-workspace edits follow your normal opencode rules. Project-level `plugin`/`permission` config merges with the global config.
+The `permission` entries route every bash command and file edit through the approval flow — the plugin then auto-replies to positively trusted ones in milliseconds (same mechanism OpenCode's own auto mode uses), so unknown and risky cases remain at the dialog. `edit` routing is optional but recommended: without it, in-workspace edits follow your normal opencode rules. Project-level `plugin`/`permission` config merges with the global config.
 
 ## Options
 
@@ -102,16 +107,15 @@ The `permission` entries route every bash command and file edit through the appr
 |---|---|---|
 | `audit` | `false` | Append one JSONL line per decision (`timestamp`, `gate`, `command`, `verdict`, `action`) |
 | `logPath` | `~/.local/share/opencode/bash-sentinel-audit.jsonl` | Where the audit log is written |
-| `upstream` | `false` | Revert to the verbatim Kimi policy (workspace path rules, external-read approval, and the edit gate are all disabled) |
 
 ## Behavior notes
 
 - **`deny` rules always win.** Commands matched by a `deny` rule fail before the plugin is ever consulted.
 - **`"always allow" bypasses the plugin** for the rest of the session. If you answer "always" on a dialog, that pattern is approved without analysis afterwards.
-- **Known Bash-gate blind spots** (fail-open, by pragmatic design): literal commands without a dedicated rule, writes performed internally by an allowed script/tool, and command-specific channels neither the write-command table nor OpenCode's external-path scan sees — e.g. dynamic `awk` redirection targets or paths computed entirely inside a process.
-- **External paths fail closed for unmodeled commands.** Unknown commands may still run silently when no external-directory request is involved, but the plugin no longer auto-approves their external-directory prompt.
+- **Unknown commands fail closed at every command gate.** A literal name is not enough: it must be present in the positive trust policy, and an executable containing a path must be a known system executable path or a workspace-local executable covered by the workspace-script trust boundary.
+- **The legacy `upstream` option was removed.** It bypassed the workspace and positive-trust policies and therefore contradicted the default-deny invariant. Supplying the old option has no effect.
 - **Workspace paths are lexical, not filesystem-canonical.** A literal path inside the workspace that traverses a symlink to an external target can escape the policy. Use a sandbox when this matters.
-- **Reads, network access, and data exfiltration are not governed by the write policy.** External reads run silently, and tools such as `curl`, `git push`, or custom CLIs can transmit data.
+- **Reads, network access, and data exfiltration inside trusted scripts/tools are not sandboxed.** Unknown network tools and `git push` now ask, but an allowed workspace script or development tool can still perform those operations internally.
 - **Audit logs contain the complete command text.** When audit mode is enabled, command-line credentials or tokens are written to the configured log path.
 - **Path comparison is literal and case-sensitive**; macOS case-insensitive filesystems are not modeled.
 - **`pwsh`/`cmd` tools are out of scope** (bash analysis only).

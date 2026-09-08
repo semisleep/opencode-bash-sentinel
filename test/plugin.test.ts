@@ -141,14 +141,33 @@ describe("bash gate", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("upstream:true reverts to verbatim Kimi semantics", async () => {
+  it("unknown commands and untrusted executable paths fail closed", async () => {
+    const hooks = await makePlugin()
+    for (const command of [
+      "totally-unknown-command --flag",
+      "curl -o /tmp/out https://example.invalid/x",
+      "git push",
+      "find . -fprint /tmp/out",
+      "rsync src/ dest/ --log-file=/tmp/log",
+      "/tmp/ls -la",
+      "FOO=bar echo ok",
+    ]) {
+      await emit(hooks, askedEvent({ metadata: { command } }))
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("retains the documented workspace-script and developer-tool trust boundaries", async () => {
+    const hooks = await makePlugin()
+    for (const command of ["npm test", "make test", "python script.py", "bash scripts/build.sh", "./scripts/check"] ) {
+      await emit(hooks, askedEvent({ metadata: { command } }))
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+  })
+
+  it("the removed upstream option can no longer disable fail-closed policy", async () => {
     const hooks = await makePlugin({ upstream: true })
-    // outside-write is invisible to the upstream analyzer: must be approved
     await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    // rm -rf anywhere stays dangerous upstream: must escalate
-    fetchMock.mockClear()
-    await emit(hooks, askedEvent({ metadata: { command: "rm -rf build" } }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -234,10 +253,10 @@ describe("external_directory gate", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it("not handled in upstream mode", async () => {
+  it("the removed upstream option cannot bypass this gate", async () => {
     const hooks = await makePlugin({ upstream: true })
     await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts" } }))
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -276,13 +295,13 @@ describe("edit gate", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("not handled in upstream mode", async () => {
+  it("the removed upstream option cannot bypass this gate", async () => {
     const hooks = await makePlugin({ upstream: true })
     await emit(
       hooks,
       askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/src/app.ts` } }),
     )
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
 

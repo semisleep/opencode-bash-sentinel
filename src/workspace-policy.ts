@@ -1,13 +1,14 @@
 // Workspace path policy — our own rules, NOT part of the upstream port.
 //
 // Principle:
-//   - inside the workspace: reads and writes are auto-approved
-//   - outside the workspace: reads are auto-approved, writes require confirmation
+//   - recognized commands may read anywhere
+//   - recognized writes may target only the workspace
+//   - unknown commands/effects require confirmation
 //
 // Enforced over the bash syntax tree: write-command targets, write-redirect
 // targets, inline-code interpreters, find/xargs escape hatches, and the
 // cd-then-relative-write combo. `.git` is always a write-forbidden zone.
-// Anything unresolvable (variables, globs, substitutions) fails safe.
+// Anything relevant to execution or writes that is unresolvable fails safe.
 
 import os from 'node:os'
 import path from 'node:path'
@@ -40,7 +41,9 @@ export interface PolicyResult {
   /** Workspace target analysis may explicitly override upstream's path-blind rm -rf rule. */
   readonly suppressUpstreamRmRf: boolean
   /** Every command's external-path behavior is covered by an explicit rule. */
-  readonly externalSafe: boolean
+  readonly externalEffectsModeled: boolean
+  /** The entire command line is covered by positive Bash trust rules. */
+  readonly commandTrusted: boolean
 }
 
 const DEVICE_EXEMPT = new Set(['/dev/null', '/dev/stdout', '/dev/stderr'])
@@ -82,7 +85,6 @@ const EXTERNAL_MODELED_COMMANDS = new Set([
   'git',
   'grep',
   'head',
-  'less',
   'ls',
   'printf',
   'pushd',
@@ -92,7 +94,6 @@ const EXTERNAL_MODELED_COMMANDS = new Set([
   'rg',
   'ripgrep',
   'sed',
-  'sort',
   'stat',
   'strings',
   'tail',
@@ -102,6 +103,68 @@ const EXTERNAL_MODELED_COMMANDS = new Set([
   'wc',
   'which',
 ])
+
+// Commands in these sets are positively recognized by the Bash gate. This is
+// deliberately an allowlist: a literal command name that is absent here stays
+// with the human even when neither analyzer found a concrete dangerous effect.
+const READ_ONLY_COMMANDS = new Set([
+  'cat',
+  'cmp',
+  'cut',
+  'df',
+  'diff',
+  'du',
+  'echo',
+  'egrep',
+  'false',
+  'fgrep',
+  'file',
+  'grep',
+  'head',
+  'ls',
+  'printf',
+  'pwd',
+  'readlink',
+  'realpath',
+  'stat',
+  'strings',
+  'tail',
+  'test',
+  'true',
+  'uniq',
+  'wc',
+  'which',
+  ':',
+  '[',
+])
+
+// Explicit trust boundary retained for developer workflows. These tools can
+// execute workspace-controlled hooks/configuration; their internals are not
+// inspected. Keep the list finite so a typo or custom CLI does not fail open.
+const TRUSTED_DEVELOPMENT_COMMANDS = new Set([
+  'biome',
+  'bun',
+  'cargo',
+  'cmake',
+  'deno',
+  'eslint',
+  'go',
+  'jest',
+  'make',
+  'ninja',
+  'npm',
+  'npx',
+  'pnpm',
+  'pnpx',
+  'prettier',
+  'pytest',
+  'rustc',
+  'tsc',
+  'vitest',
+  'yarn',
+])
+
+const TRUSTED_SYSTEM_EXECUTABLE_DIRS = new Set(['/bin', '/sbin', '/usr/bin', '/usr/sbin'])
 
 const SENSITIVE_ENV_ASSIGNMENTS = new Set([
   'BASH_ENV',
@@ -177,6 +240,28 @@ const SCRIPT_EXECUTORS: Readonly<Record<string, ReadonlySet<string>>> = {
   '.': new Set(),
 }
 
+const MODELED_BASH_COMMANDS = new Set([
+  ...READ_ONLY_COMMANDS,
+  ...WRITE_COMMANDS,
+  ...TRUSTED_DEVELOPMENT_COMMANDS,
+  ...Object.keys(SCRIPT_EXECUTORS),
+  'awk',
+  'cd',
+  'declare',
+  'eval',
+  'export',
+  'find',
+  'gawk',
+  'git',
+  'mawk',
+  'pushd',
+  'readonly',
+  'rg',
+  'ripgrep',
+  'typeset',
+  'xargs',
+])
+
 // remote-execution / remote-copy commands: any operand escalates
 const REMOTE_COMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
   ssh: new Set(['-p', '-i', '-l', '-o', '-b', '-e', '-w', '-W', '-L', '-R', '-D', '-J', '-S']),
@@ -185,7 +270,9 @@ const REMOTE_COMMANDS: Readonly<Record<string, ReadonlySet<string>>> = {
 }
 
 // awk programs can execute commands or write files from inside the program
-const AWK_UNSAFE_PROGRAM = /system\s*\(|>{1,2}\s*['"]|\|\s*['"]/
+const AWK_UNSAFE_PROGRAM = /system\s*\(|>{1,2}|\|\s*['"]/
+const SED_SIDE_EFFECT_COMMAND =
+  /(?:^|[;}\n])\s*(?:(?:[0-9]+|\$|\/(?:\\.|[^/])*\/)(?:,(?:[0-9]+|\$|\/(?:\\.|[^/])*\/))?)?\s*[eEwW](?:\s|$)|s(.).*?\1.*?\1[a-zA-Z]*[ewW]/
 
 const ALWAYS_ESCALATE_INTERPRETERS = new Set(['osascript'])
 
@@ -201,6 +288,7 @@ const COMMAND_WRAPPERS: Readonly<Record<string, readonly string[]>> = {
 const COMMAND_WRAPPER_NAMES = new Set(Object.keys(COMMAND_WRAPPERS))
 
 const FIND_DESTRUCTIVE_FLAGS = new Set(['-delete', '--delete', '-exec', '-execdir', '-ok', '-okdir'])
+const FIND_OUTPUT_FLAGS = new Set(['-fls', '-fprint', '-fprint0', '-fprintf'])
 
 // git subcommands that only read; anything else on an external repo escalates
 const GIT_READONLY_SUBCOMMANDS = new Set([
@@ -224,8 +312,45 @@ const GIT_READONLY_SUBCOMMANDS = new Set([
   'count-objects',
 ])
 
+const GIT_TRUSTED_LOCAL_SUBCOMMANDS = new Set([
+  ...GIT_READONLY_SUBCOMMANDS,
+  'add',
+  'branch',
+  'checkout',
+  'cherry-pick',
+  'clean',
+  'commit',
+  'init',
+  'merge',
+  'mv',
+  'rebase',
+  'reset',
+  'restore',
+  'revert',
+  'rm',
+  'stash',
+  'switch',
+  'tag',
+])
+
+const RSYNC_WRITE_PATH_OPTIONS = new Set([
+  '--backup-dir',
+  '--log-file',
+  '--partial-dir',
+  '--temp-dir',
+  '--write-batch',
+])
+
 // git global flags that consume the next argument as a value
 const GIT_VALUE_FLAGS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace'])
+const GIT_INIT_VALUE_OPTIONS = new Set([
+  '-b',
+  '--initial-branch',
+  '--object-format',
+  '--ref-format',
+  '--separate-git-dir',
+  '--template',
+])
 
 const COPY_MOVE_VALUE_OPTIONS = new Set(['-t', '--target-directory', '-S', '--suffix'])
 const INSTALL_VALUE_OPTIONS = new Set([
@@ -268,21 +393,29 @@ const RSYNC_VALUE_OPTIONS = new Set([
   '--modify-window',
   '--out-format',
   '--password-file',
+  '--partial-dir',
   '--port',
   '--rsync-path',
   '--suffix',
   '--temp-dir',
   '--timeout',
   '--usermap',
+  '--write-batch',
 ])
 
 type TargetClass = 'inside' | 'outside' | 'relative' | 'unresolvable'
+type ExecutableTrust = 'named' | 'system' | 'workspace' | 'untrusted-path'
 
 export function analyzeWorkspacePolicy(source: string, ctx: WorkspaceContext): PolicyResult {
   try {
     return analyzeTree(source, ctx)
   } catch {
-    return { verdict: { kind: 'unanalyzable' }, suppressUpstreamRmRf: false, externalSafe: false }
+    return {
+      verdict: { kind: 'unanalyzable' },
+      suppressUpstreamRmRf: false,
+      externalEffectsModeled: false,
+      commandTrusted: false,
+    }
   }
 }
 
@@ -303,7 +436,12 @@ export function analyzeWorkspaceParsed(
   initialCwd = ctx.workspace,
 ): PolicyResult {
   if (!parsed.ok || parsed.hasError) {
-    return { verdict: { kind: 'unanalyzable' }, suppressUpstreamRmRf: false, externalSafe: false }
+    return {
+      verdict: { kind: 'unanalyzable' },
+      suppressUpstreamRmRf: false,
+      externalEffectsModeled: false,
+      commandTrusted: false,
+    }
   }
 
   const state = {
@@ -312,7 +450,8 @@ export function analyzeWorkspaceParsed(
     relativeWrite: false,
     externalCd: false,
     cwds: new Set([initialCwd]),
-    externalSafe: true,
+    externalEffectsModeled: true,
+    commandTrusted: true,
     checkedRedirects: new Set<SyntaxNode>(),
   }
 
@@ -329,7 +468,8 @@ export function analyzeWorkspaceParsed(
   return {
     verdict: state.dangerous,
     suppressUpstreamRmRf: state.suppressUpstreamRmRf,
-    externalSafe: state.externalSafe,
+    externalEffectsModeled: state.externalEffectsModeled,
+    commandTrusted: state.commandTrusted,
   }
 }
 
@@ -349,7 +489,7 @@ function checkCommandNode(node: SyntaxNode, ctx: WorkspaceContext, state: State)
   }
   invocation.branchScoped = hasBranchOrSubshellAncestor(node)
   invocation.precededByAnd = isPrecededByOperator(node, '&&')
-  checkInvocation(invocation.name, invocation.args, ctx, state, invocation.dropped, invocation)
+  checkInvocation(invocation.executable, invocation.args, ctx, state, invocation.dropped, invocation)
 }
 
 interface State {
@@ -358,7 +498,8 @@ interface State {
   relativeWrite: boolean
   externalCd: boolean
   cwds: Set<string>
-  externalSafe: boolean
+  externalEffectsModeled: boolean
+  commandTrusted: boolean
   checkedRedirects: Set<SyntaxNode>
 }
 
@@ -371,7 +512,8 @@ function checkSensitiveAssignments(root: SyntaxNode, state: State): void {
   while (stack.length > 0) {
     const node = stack.pop()!
     if (node.type === 'variable_assignment') {
-      state.externalSafe = false
+      state.externalEffectsModeled = false
+      state.commandTrusted = false
       const name = node.text.split(/\+=|=/, 1)[0]
       if (name !== undefined && SENSITIVE_ENV_ASSIGNMENTS.has(name)) {
         fail(state, `sensitive environment assignment: ${name}`)
@@ -384,8 +526,12 @@ function checkSensitiveAssignments(root: SyntaxNode, state: State): void {
 function checkSensitiveAssignmentArgs(args: readonly string[], state: State): void {
   for (const arg of args) {
     const match = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/.exec(arg)
-    if (match?.[1] !== undefined && SENSITIVE_ENV_ASSIGNMENTS.has(match[1])) {
-      fail(state, `sensitive environment assignment: ${match[1]}`)
+    if (match?.[1] !== undefined) {
+      state.externalEffectsModeled = false
+      state.commandTrusted = false
+      if (SENSITIVE_ENV_ASSIGNMENTS.has(match[1])) {
+        fail(state, `sensitive environment assignment: ${match[1]}`)
+      }
     }
   }
 }
@@ -423,7 +569,8 @@ function verdictCommand(verdict: DangerousVerdict): string {
 function mergeNestedResult(nested: PolicyResult, state: State): void {
   if (nested.verdict !== undefined) fail(state, verdictCommand(nested.verdict))
   state.suppressUpstreamRmRf ||= nested.suppressUpstreamRmRf
-  state.externalSafe &&= nested.externalSafe
+  state.externalEffectsModeled &&= nested.externalEffectsModeled
+  state.commandTrusted &&= nested.commandTrusted
 }
 
 function analyzeNestedSource(source: string, ctx: WorkspaceContext, state: State): void {
@@ -441,7 +588,7 @@ function replaceCwds(state: State, next: Set<string>): void {
 }
 
 function checkInvocation(
-  rawName: string,
+  rawExecutable: string,
   rawArgs: readonly string[],
   ctx: WorkspaceContext,
   state: State,
@@ -453,41 +600,68 @@ function checkInvocation(
     precededByAnd: boolean
   },
 ): void {
-  let name = rawName
+  let executable = rawExecutable
+  let name = normalizeCommandName(executable)
   let args = rawArgs
   let dropped = invocationDropped
 
   let hops = 0
   for (; hops < 8; hops += 1) {
+    const executableTrust = classifyExecutable(executable, ctx, state.cwds)
+    if (executableTrust === 'workspace') {
+      // Deliberate trust boundary: the command line is known to invoke a
+      // workspace-local executable, but its contents are not inspected.
+      state.externalEffectsModeled = false
+      return
+    }
+    if (executableTrust === 'untrusted-path') state.commandTrusted = false
+
     if (PRIVILEGE_WRAPPERS.has(name)) {
       if (name === 'sudo') markSudoCwd(args, ctx, state)
       const rest = dropValueOptions(args, PRIVILEGE_VALUE_OPTIONS)
-      if (rest.length === 0) return
-      name = normalizeCommandName(rest[0]!)
+      if (rest.length === 0) {
+        state.commandTrusted = false
+        return
+      }
+      executable = rest[0]!
+      name = normalizeCommandName(executable)
       args = rest.slice(1)
       continue
     }
     if (LAUNCH_WRAPPERS.has(name)) {
+      if (name === 'command' && isCommandQuery(args)) return
       if (name === 'env') {
         markWrapperCwd(args, ctx, state)
         checkSensitiveAssignmentArgs(args, state)
       }
       const rest = dropLaunchWrapperOperands(name, args)
-      if (rest.length === 0) return
-      name = normalizeCommandName(rest[0]!)
+      if (rest.length === 0) {
+        state.commandTrusted = false
+        return
+      }
+      executable = rest[0]!
+      name = normalizeCommandName(executable)
       args = rest.slice(1)
       continue
     }
     if (name === 'busybox') {
-      if (args.length === 0 || args[0]!.startsWith('-')) return
+      if (args.length === 0 || args[0]!.startsWith('-')) {
+        state.commandTrusted = false
+        return
+      }
+      executable = args[0]!
       name = normalizeCommandName(args[0]!)
       args = args.slice(1)
       continue
     }
     if (COMMAND_WRAPPER_NAMES.has(name)) {
       const rest = commandWrapperOperands(name, args)
-      if (rest.length === 0) return
-      name = normalizeCommandName(rest[0]!)
+      if (rest.length === 0) {
+        state.commandTrusted = false
+        return
+      }
+      executable = rest[0]!
+      name = normalizeCommandName(executable)
       args = rest.slice(1)
       continue
     }
@@ -526,7 +700,7 @@ function checkInvocation(
       fail(state, 'shell executes script from stdin (pipe/heredoc)')
       return
     }
-    state.externalSafe = false
+    state.externalEffectsModeled = false
     checkScriptOperand(args, new Set(), dropped, ctx, state, name)
     return
   }
@@ -537,7 +711,8 @@ function checkInvocation(
     return
   }
 
-  if (!EXTERNAL_MODELED_COMMANDS.has(name)) state.externalSafe = false
+  if (!MODELED_BASH_COMMANDS.has(name)) state.commandTrusted = false
+  if (!EXTERNAL_MODELED_COMMANDS.has(name)) state.externalEffectsModeled = false
 
   if (name === 'export' || name === 'declare' || name === 'typeset' || name === 'readonly') {
     checkSensitiveAssignmentArgs(args, state)
@@ -556,6 +731,19 @@ function checkInvocation(
     // destination is the last positional; `-t DIR` / `--target-directory DIR`
     // (and `install`'s mode/owner value flags) are consumed as values
     const valueOptions = name === 'install' ? INSTALL_VALUE_OPTIONS : COPY_MOVE_VALUE_OPTIONS
+    if (
+      name === 'install' &&
+      args.some(
+        (arg) =>
+          arg === '-s' ||
+          arg === '--strip' ||
+          arg === '--strip-program' ||
+          arg.startsWith('--strip-program='),
+      )
+    ) {
+      fail(state, 'install --strip-program executes an external command')
+      return
+    }
     checkCopyMove(args, valueOptions, ctx, state, name)
     return
   }
@@ -582,6 +770,7 @@ function checkInvocation(
     return
   }
   if (name === 'git') {
+    if (dropped) state.commandTrusted = false
     checkGit(args, ctx, state)
     return
   }
@@ -593,11 +782,21 @@ function checkInvocation(
     checkSed(args, ctx, state)
     return
   }
-  if (name === 'rsync' || name === 'ln') {
-    const positionals =
-      name === 'rsync' ? positionalArgsAnywhere(args, RSYNC_VALUE_OPTIONS) : positionalArgs(args, new Set())
+  if (name === 'ln') {
+    checkCopyMove(args, COPY_MOVE_VALUE_OPTIONS, ctx, state, name)
+    return
+  }
+  if (name === 'rsync') {
+    checkRsyncOptions(args, ctx, state)
+    const positionals = positionalArgsAnywhere(args, RSYNC_VALUE_OPTIONS)
     const target = positionals.at(-1)
-    if (target !== undefined) checkWriteTarget(target, ctx, state, name)
+    if (target !== undefined) {
+      if (positionals.some((operand) => /^[^/]+:/.test(operand) || operand.startsWith('rsync://'))) {
+        fail(state, 'rsync: remote source or destination')
+      } else {
+        checkWriteTarget(target, ctx, state, name)
+      }
+    }
     return
   }
   if (name === 'tee' || name === 'truncate' || name === 'shred') {
@@ -610,6 +809,13 @@ function checkInvocation(
       return
     }
     if (args.some((arg) => FIND_DESTRUCTIVE_FLAGS.has(arg))) fail(state, 'find -delete/-exec')
+    for (let i = 0; i < args.length; i += 1) {
+      const flag = args[i]!
+      if (!FIND_OUTPUT_FLAGS.has(flag)) continue
+      const target = args[i + 1]
+      if (target === undefined) fail(state, `find ${flag}: missing output target`)
+      else checkWriteTarget(target, ctx, state, `find ${flag}`)
+    }
     return
   }
   if (name === 'xargs') {
@@ -617,10 +823,20 @@ function checkInvocation(
       fail(state, 'xargs: unresolvable command')
       return
     }
-    for (const operand of positionalArgs(args, XARGS_VALUE_OPTIONS)) {
+    const operands = positionalArgs(args, XARGS_VALUE_OPTIONS)
+    for (const operand of operands) {
       if (XARGS_BLOCKED_OPERANDS.has(normalizeCommandName(operand))) {
         fail(state, 'xargs invokes a write-capable command')
         return
+      }
+    }
+    const executable = operands[0]
+    if (executable !== undefined) {
+      const executableTrust = classifyExecutable(executable, ctx, state.cwds)
+      if (executableTrust === 'workspace') {
+        state.externalEffectsModeled = false
+      } else if (executableTrust === 'untrusted-path' || !READ_ONLY_COMMANDS.has(normalizeCommandName(executable))) {
+        state.commandTrusted = false
       }
     }
     return
@@ -628,6 +844,10 @@ function checkInvocation(
   if (name === 'cd' || name === 'pushd') {
     const target = positionalArgs(args, new Set())[0]
     if (target === undefined) {
+      if (dropped) {
+        fail(state, `${name}: unresolvable target`)
+        return
+      }
       const next = new Set([ctx.homedir])
       if (invocation.branchScoped) for (const cwd of state.cwds) next.add(cwd)
       replaceCwds(state, next)
@@ -687,6 +907,27 @@ function checkInvocation(
     if (invocation.rawArgTexts.some((text) => AWK_UNSAFE_PROGRAM.test(text))) {
       fail(state, 'awk program executes commands or writes files')
     }
+    if (invocation.rawArgTexts.some((text) => /^\s*\$[{A-Za-z_]/.test(text) || text.includes('`'))) {
+      state.commandTrusted = false
+    }
+    return
+  }
+  if (name === 'rg' || name === 'ripgrep') {
+    if (
+      args.some(
+        (arg) =>
+          arg === '--pre' ||
+          arg.startsWith('--pre=') ||
+          arg === '--hostname-bin' ||
+          arg.startsWith('--hostname-bin='),
+      )
+    ) {
+      fail(state, `${name}: option executes an external command`)
+    }
+    return
+  }
+  if (name === 'file') {
+    if (args.some((arg) => /^-[^-]*C/.test(arg) || arg === '--compile')) fail(state, 'file --compile writes output')
     return
   }
   if (ALWAYS_ESCALATE_INTERPRETERS.has(name)) {
@@ -718,6 +959,11 @@ function checkCopyMove(
         return
       }
     }
+    const attachedTarget = /^-[a-zA-Z]*t(.+)$/.exec(arg)?.[1]
+    if (attachedTarget !== undefined) {
+      checkWriteTarget(attachedTarget, ctx, state, command)
+      return
+    }
     if (arg.startsWith('--target-directory=')) {
       checkWriteTarget(arg.slice(arg.indexOf('=') + 1), ctx, state, command)
       return
@@ -728,6 +974,33 @@ function checkCopyMove(
   if (destination !== undefined) checkWriteTarget(destination, ctx, state, command)
 }
 
+function checkRsyncOptions(args: readonly string[], ctx: WorkspaceContext, state: State): void {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    if (
+      arg === '-e' ||
+      /^-e.+/.test(arg) ||
+      arg === '--rsh' ||
+      arg.startsWith('--rsh=') ||
+      arg === '--rsync-path' ||
+      arg.startsWith('--rsync-path=')
+    ) {
+      fail(state, 'rsync: remote shell')
+      return
+    }
+    if (arg === '--remove-source-files') {
+      fail(state, 'rsync: removes source files')
+      return
+    }
+    const equals = arg.indexOf('=')
+    const option = equals >= 0 ? arg.slice(0, equals) : arg
+    if (!RSYNC_WRITE_PATH_OPTIONS.has(option)) continue
+    const target = equals >= 0 ? arg.slice(equals + 1) : args[i + 1]
+    if (target === undefined || target.length === 0) fail(state, `rsync ${option}: missing write target`)
+    else checkWriteTarget(target, ctx, state, `rsync ${option}`)
+  }
+}
+
 // `git -C <dir>` (and --git-dir/--work-tree) makes git operate on another
 // repository: read-only subcommands are fine there, everything else escalates.
 // In-workspace git commands are always allowed — git's own .git bookkeeping is
@@ -735,6 +1008,7 @@ function checkCopyMove(
 function checkGit(args: readonly string[], ctx: WorkspaceContext, state: State): void {
   let externalRepo = false
   let subcommand: string | undefined
+  let subcommandIndex = -1
   let globalOrSystemConfig = false
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!
@@ -745,6 +1019,12 @@ function checkGit(args: readonly string[], ctx: WorkspaceContext, state: State):
       else checkWriteTarget(target, ctx, state, 'git --output')
     } else if (arg.startsWith('--output=')) {
       checkWriteTarget(arg.slice('--output='.length), ctx, state, 'git --output')
+    } else if (arg === '--separate-git-dir') {
+      const target = args[i + 1]
+      if (target === undefined) fail(state, 'git: missing --separate-git-dir target')
+      else checkWriteTarget(target, ctx, state, 'git --separate-git-dir')
+    } else if (arg.startsWith('--separate-git-dir=')) {
+      checkWriteTarget(arg.slice('--separate-git-dir='.length), ctx, state, 'git --separate-git-dir')
     }
   }
   for (let i = 0; i < args.length; i += 1) {
@@ -764,17 +1044,24 @@ function checkGit(args: readonly string[], ctx: WorkspaceContext, state: State):
       if (GIT_VALUE_FLAGS.has(arg)) {
         const value = args[i + 1]
         if (value === undefined) break
-        if (arg !== '-c') externalRepo ||= isExternalTargetFromAnyCwd(value, ctx, state.cwds)
+        if (arg === '-c') state.commandTrusted = false
+        else externalRepo ||= isExternalTargetFromAnyCwd(value, ctx, state.cwds)
         i += 1
       }
       continue
     }
     subcommand = arg
+    subcommandIndex = i
     break
   }
   if (subcommand === 'config' && globalOrSystemConfig) fail(state, 'git config outside workspace')
   if (subcommand === 'credential' || subcommand === 'credential-store') fail(state, `git ${subcommand}`)
-  if (subcommand === undefined || !GIT_READONLY_SUBCOMMANDS.has(subcommand)) state.externalSafe = false
+  if (subcommand === 'init') {
+    const target = positionalArgs(args.slice(subcommandIndex + 1), GIT_INIT_VALUE_OPTIONS)[0]
+    if (target !== undefined) checkWriteTarget(target, ctx, state, 'git init')
+  }
+  if (subcommand !== undefined && !GIT_TRUSTED_LOCAL_SUBCOMMANDS.has(subcommand)) state.commandTrusted = false
+  if (subcommand === undefined || !GIT_READONLY_SUBCOMMANDS.has(subcommand)) state.externalEffectsModeled = false
   if (externalRepo && subcommand !== undefined && !GIT_READONLY_SUBCOMMANDS.has(subcommand)) {
     fail(state, `git ${subcommand} on external repository`)
   }
@@ -834,11 +1121,35 @@ function checkDd(args: readonly string[], ctx: WorkspaceContext, state: State): 
 }
 
 function checkSed(args: readonly string[], ctx: WorkspaceContext, state: State): void {
+  const programOptions = new Set(['-e', '--expression', '-f', '--file'])
+  const programs: string[] = []
+  let hasProgramFile = false
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    if (arg === '-f' || arg === '--file' || arg.startsWith('--file=') || /^-f.+/.test(arg)) {
+      hasProgramFile = true
+    }
+    if (arg === '-e' || arg === '--expression') {
+      const program = args[i + 1]
+      if (program !== undefined) programs.push(program)
+    } else if (arg.startsWith('--expression=')) {
+      programs.push(arg.slice('--expression='.length))
+    } else if (/^-e.+/.test(arg)) {
+      programs.push(arg.slice(2))
+    }
+  }
+  const positionals = positionalArgsAnywhere(args, programOptions)
+  if (programs.length === 0 && !hasProgramFile && positionals[0] !== undefined) programs.push(positionals[0])
+  if (hasProgramFile) state.commandTrusted = false
+  if (programs.some((program) => SED_SIDE_EFFECT_COMMAND.test(program))) {
+    fail(state, 'sed program has an unmodeled exec/write command')
+    return
+  }
+
   const inPlace = args.some(
     (arg) => arg === '--in-place' || arg.startsWith('--in-place=') || /^-[a-zA-Z]*i/.test(arg),
   )
   if (!inPlace) return
-  const programOptions = new Set(['-e', '--expression', '-f', '--file'])
   const hasExplicitProgram = args.some(
     (arg) =>
       programOptions.has(arg) ||
@@ -846,7 +1157,6 @@ function checkSed(args: readonly string[], ctx: WorkspaceContext, state: State):
       arg.startsWith('--file=') ||
       /^-[ef].+/.test(arg),
   )
-  const positionals = positionalArgsAnywhere(args, programOptions)
   const targets = hasExplicitProgram ? positionals : positionals.slice(1)
   for (const target of targets) checkWriteTarget(target, ctx, state, 'sed')
 }
@@ -911,6 +1221,14 @@ function commandWrapperOperands(name: string, args: readonly string[]): string[]
   return rest
 }
 
+function isCommandQuery(args: readonly string[]): boolean {
+  for (const arg of args) {
+    if (arg === '--' || arg === '-' || !arg.startsWith('-')) return false
+    if (/[vV]/.test(arg)) return true
+  }
+  return false
+}
+
 // Running a script that lives outside the workspace (or whose path cannot be
 // resolved) is arbitrary code execution — escalate. '-' means stdin.
 function checkScriptPath(
@@ -945,7 +1263,7 @@ function shellReadsStdin(args: readonly string[]): boolean {
 function commandInvocationLoose(
   node: SyntaxNode,
 ): {
-  name: string
+  executable: string
   args: string[]
   dropped: boolean
   rawArgTexts: string[]
@@ -978,7 +1296,7 @@ function commandInvocationLoose(
     }
   }
   return {
-    name: normalizeCommandName(rawName),
+    executable: rawName,
     args,
     dropped,
     rawArgTexts,
@@ -1127,6 +1445,25 @@ function resolveTarget(raw: string, ctx: WorkspaceContext): string | undefined {
   const normalized = path.normalize(p)
   if (normalized.length > 1 && normalized.endsWith('/')) return normalized.slice(0, -1)
   return normalized
+}
+
+function classifyExecutable(
+  raw: string,
+  ctx: WorkspaceContext,
+  cwds: ReadonlySet<string>,
+): ExecutableTrust {
+  if (!raw.includes('/') && !raw.includes('\\')) return 'named'
+  const portable = raw.replaceAll('\\', '/')
+  if (path.isAbsolute(portable) && TRUSTED_SYSTEM_EXECUTABLE_DIRS.has(path.dirname(path.normalize(portable)))) {
+    return 'system'
+  }
+  const resolved = resolveTarget(portable, ctx)
+  if (resolved === undefined) return 'untrusted-path'
+  for (const cwd of cwds) {
+    const absolute = path.isAbsolute(resolved) ? resolved : path.resolve(cwd, resolved)
+    if (!withinWorkspace(absolute, ctx.workspace)) return 'untrusted-path'
+  }
+  return 'workspace'
 }
 
 function classifyTarget(raw: string, ctx: WorkspaceContext, cwd = ctx.workspace): TargetClass {
