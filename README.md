@@ -39,6 +39,8 @@ On top of the path policy, the ported Kimi dangerous-command rules still apply e
 - Redirects (`>`, `>>`, `2>`, `&>`) whose target is outside the workspace, unresolvable (`> $OUT`), or inside `.git`
 - Escape hatches: `find ... -delete` / `-exec`, `xargs rm`, command wrappers (`time rm x`, `timeout 10 rm x`, `watch ...`), inline-code interpreters (`python -c`, `node -e`, `ruby -e`, `php -r`, any `osascript`), pipe-executed shells (`curl ... | sh`), scripts from outside the workspace (`python /tmp/x.py`, `bash /tmp/x.sh`, `source /tmp/env`, heredoc/stdin scripts), remote execution (`ssh host cmd`, `scp`), and `awk` programs using `system()` or file redirection
 - `cd` outside the workspace followed by a relative write (`cd /tmp && echo x > f`)
+- Sensitive environment assignments that can redirect execution or storage (`GIT_DIR`, `GIT_WORK_TREE`, `HOME`, `PATH`, `BASH_ENV`, `LD_PRELOAD`, ...)
+- External-directory requests from commands whose path effects are not explicitly modeled (`curl -o`, `tar -C`, custom CLIs, package managers, ...)
 - Catastrophic targets even inside the workspace: the workspace root itself, `~`, `/`, and `.git` paths
 - The upstream Kimi dangerous list: `sudo rm -rf ...`, `shutdown`, `reboot`, `mkfs*`, `init 0/6`, `systemctl poweroff`, `dd of=/dev/sda`, ...
 
@@ -106,7 +108,8 @@ The `permission` entries route every bash command and file edit through the appr
 
 - **`deny` rules always win.** Commands matched by a `deny` rule fail before the plugin is ever consulted.
 - **`"always allow" bypasses the plugin** for the rest of the session. If you answer "always" on a dialog, that pattern is approved without analysis afterwards.
-- **Known blind spots** (fail-open, by pragmatic design): literal commands without a dedicated rule, writes performed internally by an allowed script/tool, and command-specific channels neither OpenCode's external-directory scan nor the write-command table sees — e.g. dynamic `awk` redirection targets, `tar -C`, or package managers with `--prefix`.
+- **Known Bash-gate blind spots** (fail-open, by pragmatic design): literal commands without a dedicated rule, writes performed internally by an allowed script/tool, and command-specific channels neither the write-command table nor OpenCode's external-path scan sees — e.g. dynamic `awk` redirection targets or paths computed entirely inside a process.
+- **External paths fail closed for unmodeled commands.** Unknown commands may still run silently when no external-directory request is involved, but the plugin no longer auto-approves their external-directory prompt.
 - **Workspace paths are lexical, not filesystem-canonical.** A literal path inside the workspace that traverses a symlink to an external target can escape the policy. Use a sandbox when this matters.
 - **Reads, network access, and data exfiltration are not governed by the write policy.** External reads run silently, and tools such as `curl`, `git push`, or custom CLIs can transmit data.
 - **Audit logs contain the complete command text.** When audit mode is enabled, command-line credentials or tokens are written to the configured log path.

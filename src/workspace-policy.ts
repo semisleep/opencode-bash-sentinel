@@ -15,6 +15,7 @@ import path from 'node:path'
 import { parse } from './parser/index'
 import type { SyntaxNode } from './parser/node'
 import {
+  type BashParseResult,
   DD_SAFE_DEVICE_TARGETS,
   NESTED_SHELLS,
   PRIVILEGE_VALUE_OPTIONS,
@@ -24,6 +25,7 @@ import {
   collectCommands,
   dropLaunchWrapperOperands,
   literalText,
+  nestedShellCommand,
   normalizeCommandName,
 } from './analyzer'
 import type { DangerousVerdict } from './analyzer'
@@ -35,10 +37,14 @@ export interface WorkspaceContext {
 
 export interface PolicyResult {
   readonly verdict: DangerousVerdict | undefined
-  readonly rmHandled: boolean
+  /** Workspace target analysis may explicitly override upstream's path-blind rm -rf rule. */
+  readonly suppressUpstreamRmRf: boolean
+  /** Every command's external-path behavior is covered by an explicit rule. */
+  readonly externalSafe: boolean
 }
 
 const DEVICE_EXEMPT = new Set(['/dev/null', '/dev/stdout', '/dev/stderr'])
+const MAX_CWD_STATES = 32
 
 const WRITE_COMMANDS = new Set([
   'rm',
@@ -50,7 +56,6 @@ const WRITE_COMMANDS = new Set([
   'tee',
   'truncate',
   'shred',
-  'cpio',
   'mv',
   'cp',
   'chmod',
@@ -60,8 +65,62 @@ const WRITE_COMMANDS = new Set([
   'rmdir',
 ])
 
+const EXTERNAL_MODELED_COMMANDS = new Set([
+  ...WRITE_COMMANDS,
+  'cat',
+  'cd',
+  'cmp',
+  'cut',
+  'df',
+  'diff',
+  'du',
+  'echo',
+  'egrep',
+  'fgrep',
+  'file',
+  'find',
+  'git',
+  'grep',
+  'head',
+  'less',
+  'ls',
+  'printf',
+  'pushd',
+  'pwd',
+  'readlink',
+  'realpath',
+  'rg',
+  'ripgrep',
+  'sed',
+  'sort',
+  'stat',
+  'strings',
+  'tail',
+  'test',
+  'touch',
+  'uniq',
+  'wc',
+  'which',
+])
+
+const SENSITIVE_ENV_ASSIGNMENTS = new Set([
+  'BASH_ENV',
+  'CDPATH',
+  'ENV',
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'HOME',
+  'LD_LIBRARY_PATH',
+  'LD_PRELOAD',
+  'PATH',
+  'PYTHONPATH',
+  'RUBYLIB',
+  'ZDOTDIR',
+])
+
 const XARGS_BLOCKED_OPERANDS = new Set([
   ...WRITE_COMMANDS,
+  'cpio',
   'find',
   'xargs',
   'python',
@@ -156,7 +215,6 @@ const GIT_READONLY_SUBCOMMANDS = new Set([
   'describe',
   'shortlog',
   'cat-file',
-  'reflog',
   'whatchanged',
   'grep',
   'help',
@@ -164,7 +222,6 @@ const GIT_READONLY_SUBCOMMANDS = new Set([
   'var',
   'check-ignore',
   'count-objects',
-  'fsck',
 ])
 
 // git global flags that consume the next argument as a value
@@ -225,32 +282,55 @@ export function analyzeWorkspacePolicy(source: string, ctx: WorkspaceContext): P
   try {
     return analyzeTree(source, ctx)
   } catch {
-    return { verdict: { kind: 'unanalyzable' }, rmHandled: false }
+    return { verdict: { kind: 'unanalyzable' }, suppressUpstreamRmRf: false, externalSafe: false }
   }
 }
 
 function analyzeTree(source: string, ctx: WorkspaceContext, initialCwd = ctx.workspace): PolicyResult {
+  return analyzeWorkspaceParsed(parseWorkspaceSource(source), ctx, initialCwd)
+}
+
+function parseWorkspaceSource(source: string): BashParseResult {
   const parsed = parse(source, { timeoutMs: 500, maxNodes: 10_000 })
-  if (!parsed.ok || parsed.hasError) return { verdict: { kind: 'unanalyzable' }, rmHandled: false }
+  return parsed.ok
+    ? { ok: true, hasError: parsed.hasError, root: parsed.rootNode }
+    : { ok: false }
+}
+
+export function analyzeWorkspaceParsed(
+  parsed: BashParseResult,
+  ctx: WorkspaceContext,
+  initialCwd = ctx.workspace,
+): PolicyResult {
+  if (!parsed.ok || parsed.hasError) {
+    return { verdict: { kind: 'unanalyzable' }, suppressUpstreamRmRf: false, externalSafe: false }
+  }
 
   const state = {
     dangerous: undefined as DangerousVerdict | undefined,
-    rmHandled: false,
+    suppressUpstreamRmRf: false,
     relativeWrite: false,
     externalCd: false,
-    cwd: initialCwd,
+    cwds: new Set([initialCwd]),
+    externalSafe: true,
+    checkedRedirects: new Set<SyntaxNode>(),
   }
 
   const commands: SyntaxNode[] = []
-  collectCommands(parsed.rootNode, commands)
+  checkSensitiveAssignments(parsed.root, state)
+  collectCommands(parsed.root, commands)
   for (const command of commands) checkCommandNode(command, ctx, state)
 
-  checkRedirects(parsed.rootNode, ctx, state)
+  checkRedirects(parsed.root, ctx, state)
 
   if (state.dangerous === undefined && state.relativeWrite && state.externalCd) {
     state.dangerous = { kind: 'dangerous', command: 'write after cd outside workspace' }
   }
-  return { verdict: state.dangerous, rmHandled: state.rmHandled }
+  return {
+    verdict: state.dangerous,
+    suppressUpstreamRmRf: state.suppressUpstreamRmRf,
+    externalSafe: state.externalSafe,
+  }
 }
 
 function checkCommandNode(node: SyntaxNode, ctx: WorkspaceContext, state: State): void {
@@ -262,23 +342,102 @@ function checkCommandNode(node: SyntaxNode, ctx: WorkspaceContext, state: State)
   // heredocs attach as siblings of the command under redirected_statement
   const siblings = node.parent?.children ?? []
   if (siblings.some((child) => child.type === 'heredoc_redirect')) invocation.hasHeredoc = true
+  // Shell opens a command's redirects before executing the command. Capture
+  // them now, while state.cwds still represents the command's entry cwd.
+  for (const child of [...node.children, ...siblings]) {
+    if (child.type === 'file_redirect') checkRedirectNode(child, ctx, state)
+  }
+  invocation.branchScoped = hasBranchOrSubshellAncestor(node)
+  invocation.precededByAnd = isPrecededByOperator(node, '&&')
   checkInvocation(invocation.name, invocation.args, ctx, state, invocation.dropped, invocation)
 }
 
 interface State {
   dangerous: DangerousVerdict | undefined
-  rmHandled: boolean
+  suppressUpstreamRmRf: boolean
   relativeWrite: boolean
   externalCd: boolean
-  cwd: string
+  cwds: Set<string>
+  externalSafe: boolean
+  checkedRedirects: Set<SyntaxNode>
 }
 
 function fail(state: State, command: string): void {
   if (state.dangerous === undefined) state.dangerous = { kind: 'dangerous', command }
 }
 
+function checkSensitiveAssignments(root: SyntaxNode, state: State): void {
+  const stack: SyntaxNode[] = [root]
+  while (stack.length > 0) {
+    const node = stack.pop()!
+    if (node.type === 'variable_assignment') {
+      state.externalSafe = false
+      const name = node.text.split(/\+=|=/, 1)[0]
+      if (name !== undefined && SENSITIVE_ENV_ASSIGNMENTS.has(name)) {
+        fail(state, `sensitive environment assignment: ${name}`)
+      }
+    }
+    for (const child of node.children) stack.push(child)
+  }
+}
+
+function checkSensitiveAssignmentArgs(args: readonly string[], state: State): void {
+  for (const arg of args) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)\+?=/.exec(arg)
+    if (match?.[1] !== undefined && SENSITIVE_ENV_ASSIGNMENTS.has(match[1])) {
+      fail(state, `sensitive environment assignment: ${match[1]}`)
+    }
+  }
+}
+
+function hasBranchOrSubshellAncestor(node: SyntaxNode): boolean {
+  for (let parent = node.parent; parent !== null; parent = parent.parent) {
+    if (
+      parent.type === 'subshell' ||
+      parent.type === 'command_substitution' ||
+      parent.type === 'if_statement' ||
+      parent.type === 'case_statement' ||
+      parent.type === 'while_statement' ||
+      parent.type === 'until_statement' ||
+      parent.type === 'for_statement' ||
+      parent.type === 'function_definition'
+    ) {
+      return true
+    }
+    if (parent.type === 'list' && parent.children.some((child) => child.text === '&&' || child.text === '||')) return true
+    if (parent.type === 'program') return false
+  }
+  return false
+}
+
+function isPrecededByOperator(node: SyntaxNode, operator: string): boolean {
+  const siblings = node.parent?.children ?? []
+  const index = siblings.indexOf(node)
+  return index > 0 && siblings[index - 1]?.text === operator
+}
+
 function verdictCommand(verdict: DangerousVerdict): string {
   return verdict.kind === 'dangerous' ? verdict.command : verdict.kind
+}
+
+function mergeNestedResult(nested: PolicyResult, state: State): void {
+  if (nested.verdict !== undefined) fail(state, verdictCommand(nested.verdict))
+  state.suppressUpstreamRmRf ||= nested.suppressUpstreamRmRf
+  state.externalSafe &&= nested.externalSafe
+}
+
+function analyzeNestedSource(source: string, ctx: WorkspaceContext, state: State): void {
+  const parsed = parseWorkspaceSource(source)
+  for (const cwd of state.cwds) mergeNestedResult(analyzeWorkspaceParsed(parsed, ctx, cwd), state)
+}
+
+function replaceCwds(state: State, next: Set<string>): void {
+  if (next.size <= MAX_CWD_STATES) {
+    state.cwds = next
+    return
+  }
+  fail(state, 'cwd state limit exceeded')
+  state.cwds = new Set(Array.from(next).slice(0, MAX_CWD_STATES))
 }
 
 function checkInvocation(
@@ -287,7 +446,12 @@ function checkInvocation(
   ctx: WorkspaceContext,
   state: State,
   invocationDropped: boolean,
-  invocation: { rawArgTexts: readonly string[]; hasHeredoc: boolean },
+  invocation: {
+    rawArgTexts: readonly string[]
+    hasHeredoc: boolean
+    branchScoped: boolean
+    precededByAnd: boolean
+  },
 ): void {
   let name = rawName
   let args = rawArgs
@@ -296,6 +460,7 @@ function checkInvocation(
   let hops = 0
   for (; hops < 8; hops += 1) {
     if (PRIVILEGE_WRAPPERS.has(name)) {
+      if (name === 'sudo') markSudoCwd(args, ctx, state)
       const rest = dropValueOptions(args, PRIVILEGE_VALUE_OPTIONS)
       if (rest.length === 0) return
       name = normalizeCommandName(rest[0]!)
@@ -303,7 +468,10 @@ function checkInvocation(
       continue
     }
     if (LAUNCH_WRAPPERS.has(name)) {
-      if (name === 'env') markWrapperCwd(args, ctx, state)
+      if (name === 'env') {
+        markWrapperCwd(args, ctx, state)
+        checkSensitiveAssignmentArgs(args, state)
+      }
       const rest = dropLaunchWrapperOperands(name, args)
       if (rest.length === 0) return
       name = normalizeCommandName(rest[0]!)
@@ -338,11 +506,17 @@ function checkInvocation(
   }
 
   if (NESTED_SHELLS.has(name)) {
-    const payload = nestedShellPayload(args)
-    if (payload !== undefined) {
-      const nested = analyzeTree(payload, ctx, state.cwd)
-      if (nested.verdict !== undefined) fail(state, verdictCommand(nested.verdict))
-      state.rmHandled ||= nested.rmHandled
+    const nested = nestedShellCommand(args)
+    if (nested.found) {
+      if (nested.payload === undefined) {
+        fail(state, 'shell: missing -c payload')
+        return
+      }
+      analyzeNestedSource(nested.payload, ctx, state)
+      return
+    }
+    if (shellReadsStdin(args)) {
+      fail(state, 'shell executes script from stdin (-s)')
       return
     }
     const operands = positionalArgs(args, new Set())
@@ -352,16 +526,21 @@ function checkInvocation(
       fail(state, 'shell executes script from stdin (pipe/heredoc)')
       return
     }
+    state.externalSafe = false
     checkScriptOperand(args, new Set(), dropped, ctx, state, name)
     return
   }
   if (name === 'eval') {
     if (args.length > 0) {
-      const nested = analyzeTree(args.join(' '), ctx, state.cwd)
-      if (nested.verdict !== undefined) fail(state, verdictCommand(nested.verdict))
-      state.rmHandled ||= nested.rmHandled
+      analyzeNestedSource(args.join(' '), ctx, state)
     }
     return
+  }
+
+  if (!EXTERNAL_MODELED_COMMANDS.has(name)) state.externalSafe = false
+
+  if (name === 'export' || name === 'declare' || name === 'typeset' || name === 'readonly') {
+    checkSensitiveAssignmentArgs(args, state)
   }
 
   if (dropped && WRITE_COMMANDS.has(name)) {
@@ -370,7 +549,7 @@ function checkInvocation(
   }
 
   if (name === 'rm') {
-    checkRm(args, ctx, state)
+    checkRm(args, ctx, state, invocation.precededByAnd)
     return
   }
   if (name === 'cp' || name === 'mv' || name === 'install') {
@@ -426,10 +605,18 @@ function checkInvocation(
     return
   }
   if (name === 'find') {
+    if (dropped && invocation.rawArgTexts.some((text) => /[$`]/.test(text))) {
+      fail(state, 'find: unresolvable action')
+      return
+    }
     if (args.some((arg) => FIND_DESTRUCTIVE_FLAGS.has(arg))) fail(state, 'find -delete/-exec')
     return
   }
   if (name === 'xargs') {
+    if (dropped) {
+      fail(state, 'xargs: unresolvable command')
+      return
+    }
     for (const operand of positionalArgs(args, XARGS_VALUE_OPTIONS)) {
       if (XARGS_BLOCKED_OPERANDS.has(normalizeCommandName(operand))) {
         fail(state, 'xargs invokes a write-capable command')
@@ -441,8 +628,10 @@ function checkInvocation(
   if (name === 'cd' || name === 'pushd') {
     const target = positionalArgs(args, new Set())[0]
     if (target === undefined) {
-      state.cwd = ctx.homedir
-      if (!withinWorkspace(state.cwd, ctx.workspace)) state.externalCd = true
+      const next = new Set([ctx.homedir])
+      if (invocation.branchScoped) for (const cwd of state.cwds) next.add(cwd)
+      replaceCwds(state, next)
+      if (!withinWorkspace(ctx.homedir, ctx.workspace)) state.externalCd = true
       return
     }
     const resolved = resolveTarget(target, ctx)
@@ -450,10 +639,14 @@ function checkInvocation(
       state.externalCd = true
       return
     }
-    state.cwd = path.isAbsolute(resolved) ? resolved : path.resolve(state.cwd, resolved)
-    // Keep this sticky. The AST walk does not model whether later commands
-    // run (`cd /tmp || cd workspace; rm x`), so clearing it could fail open.
-    if (!withinWorkspace(state.cwd, ctx.workspace)) state.externalCd = true
+    const next = new Set<string>()
+    for (const cwd of state.cwds) {
+      const destination = path.isAbsolute(resolved) ? resolved : path.resolve(cwd, resolved)
+      next.add(destination)
+      if (!withinWorkspace(destination, ctx.workspace)) state.externalCd = true
+    }
+    if (invocation.branchScoped) for (const cwd of state.cwds) next.add(cwd)
+    replaceCwds(state, next)
     return
   }
   const inline = INLINE_CODE_INTERPRETERS[name]
@@ -542,24 +735,36 @@ function checkCopyMove(
 function checkGit(args: readonly string[], ctx: WorkspaceContext, state: State): void {
   let externalRepo = false
   let subcommand: string | undefined
+  let globalOrSystemConfig = false
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    if (arg === '--global' || arg === '--system') globalOrSystemConfig = true
+    if (arg === '--output') {
+      const target = args[i + 1]
+      if (target === undefined) fail(state, 'git: missing --output target')
+      else checkWriteTarget(target, ctx, state, 'git --output')
+    } else if (arg.startsWith('--output=')) {
+      checkWriteTarget(arg.slice('--output='.length), ctx, state, 'git --output')
+    }
+  }
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!
     if (arg === '--') break
     if (arg.startsWith('-')) {
       if (arg.startsWith('--git-dir=') || arg.startsWith('--work-tree=')) {
         const value = arg.slice(arg.indexOf('=') + 1)
-        externalRepo ||= isExternalTarget(value, ctx, state.cwd)
+        externalRepo ||= isExternalTargetFromAnyCwd(value, ctx, state.cwds)
         continue
       }
       if (/^-C.+/.test(arg)) {
-        externalRepo ||= isExternalTarget(arg.slice(2), ctx, state.cwd)
+        externalRepo ||= isExternalTargetFromAnyCwd(arg.slice(2), ctx, state.cwds)
         continue
       }
       if (arg.includes('=')) continue
       if (GIT_VALUE_FLAGS.has(arg)) {
         const value = args[i + 1]
         if (value === undefined) break
-        if (arg !== '-c') externalRepo ||= isExternalTarget(value, ctx, state.cwd)
+        if (arg !== '-c') externalRepo ||= isExternalTargetFromAnyCwd(value, ctx, state.cwds)
         i += 1
       }
       continue
@@ -567,13 +772,21 @@ function checkGit(args: readonly string[], ctx: WorkspaceContext, state: State):
     subcommand = arg
     break
   }
+  if (subcommand === 'config' && globalOrSystemConfig) fail(state, 'git config outside workspace')
+  if (subcommand === 'credential' || subcommand === 'credential-store') fail(state, `git ${subcommand}`)
+  if (subcommand === undefined || !GIT_READONLY_SUBCOMMANDS.has(subcommand)) state.externalSafe = false
   if (externalRepo && subcommand !== undefined && !GIT_READONLY_SUBCOMMANDS.has(subcommand)) {
     fail(state, `git ${subcommand} on external repository`)
   }
 }
 
-function checkRm(args: readonly string[], ctx: WorkspaceContext, state: State): void {
-  state.rmHandled = true
+function checkRm(
+  args: readonly string[],
+  ctx: WorkspaceContext,
+  state: State,
+  precededByAnd: boolean,
+): void {
+  state.suppressUpstreamRmRf = true
   const targets = positionalArgs(args, new Set())
   if (targets.length === 0) return
   for (const raw of targets) {
@@ -586,14 +799,25 @@ function checkRm(args: readonly string[], ctx: WorkspaceContext, state: State): 
       fail(state, 'rm: .git path')
       continue
     }
-    const absolute = path.isAbsolute(resolved) ? resolved : path.resolve(state.cwd, resolved)
-    if (absolute === '/' || absolute === ctx.homedir || absolute === ctx.workspace) {
-      fail(state, 'rm: workspace/home root target')
-      continue
+    let rootCandidate = false
+    let safeSubpathCandidate = false
+    for (const cwd of state.cwds) {
+      const absolute = path.isAbsolute(resolved) ? resolved : path.resolve(cwd, resolved)
+      if (absolute === '/' || absolute === ctx.homedir || absolute === ctx.workspace) {
+        rootCandidate = true
+        continue
+      }
+      if (!withinWorkspace(absolute, ctx.workspace)) {
+        fail(state, 'rm: outside workspace')
+        break
+      }
+      safeSubpathCandidate = true
     }
-    if (!withinWorkspace(absolute, ctx.workspace)) {
-      fail(state, 'rm: outside workspace')
-      continue
+    // For `cd sub && rm .`, the fallback workspace cwd only exists when the
+    // cd failed, in which case rm is not executed. Keep root protection when
+    // no successful in-workspace destination is possible or for `||` branches.
+    if (rootCandidate && !(precededByAnd && safeSubpathCandidate)) {
+      fail(state, 'rm: workspace/home root target')
     }
     if (!path.isAbsolute(resolved)) state.relativeWrite = true
   }
@@ -637,10 +861,12 @@ function checkWriteTarget(raw: string, ctx: WorkspaceContext, state: State, comm
     fail(state, `${command}: .git write`)
     return
   }
-  const absolute = path.isAbsolute(resolved) ? resolved : path.resolve(state.cwd, resolved)
-  if (!withinWorkspace(absolute, ctx.workspace)) {
-    fail(state, `${command}: write outside workspace`)
-    return
+  for (const cwd of state.cwds) {
+    const absolute = path.isAbsolute(resolved) ? resolved : path.resolve(cwd, resolved)
+    if (!withinWorkspace(absolute, ctx.workspace)) {
+      fail(state, `${command}: write outside workspace`)
+      return
+    }
   }
   if (!path.isAbsolute(resolved)) state.relativeWrite = true
 }
@@ -650,18 +876,23 @@ function checkRedirects(root: SyntaxNode, ctx: WorkspaceContext, state: State): 
   while (stack.length > 0) {
     const node = stack.pop()!
     if (node.type === 'file_redirect') {
-      const operator = node.children.find((child) => !child.isNamed)?.text ?? ''
-      const targetNode = node.children.find((child) => child.isNamed && child.type !== 'file_descriptor')
-      if (operator.includes('>') && targetNode !== undefined) {
-        const raw = redirectTargetText(targetNode)
-        if (raw !== undefined) {
-          if (!DEVICE_EXEMPT.has(raw)) checkWriteTarget(raw, ctx, state, 'redirect')
-        } else {
-          fail(state, 'redirect: unresolvable write target')
-        }
-      }
+      checkRedirectNode(node, ctx, state)
     }
     for (const child of node.children) stack.push(child)
+  }
+}
+
+function checkRedirectNode(node: SyntaxNode, ctx: WorkspaceContext, state: State): void {
+  if (state.checkedRedirects.has(node)) return
+  state.checkedRedirects.add(node)
+  const operator = node.children.find((child) => !child.isNamed)?.text ?? ''
+  const targetNode = node.children.find((child) => child.isNamed && child.type !== 'file_descriptor')
+  if (!operator.includes('>') || targetNode === undefined) return
+  const raw = redirectTargetText(targetNode)
+  if (raw !== undefined) {
+    if (!DEVICE_EXEMPT.has(raw)) checkWriteTarget(raw, ctx, state, 'redirect')
+  } else {
+    fail(state, 'redirect: unresolvable write target')
   }
 }
 
@@ -693,37 +924,35 @@ function checkScriptPath(
     fail(state, `${command}: script from stdin`)
     return
   }
-  const cls = classifyTarget(raw, ctx, state.cwd)
-  if (cls === 'outside' || cls === 'unresolvable') {
-    fail(state, `${command}: script outside workspace`)
+  for (const cwd of state.cwds) {
+    const cls = classifyTarget(raw, ctx, cwd)
+    if (cls === 'outside' || cls === 'unresolvable') {
+      fail(state, `${command}: script outside workspace`)
+      return
+    }
   }
 }
 
-function nestedShellPayload(args: readonly string[]): string | undefined {
-  let payloadIndex = -1
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!
-    if (arg === '--') break
-    if (arg === '-O' || arg === '+O' || arg === '-o' || arg === '--rcfile' || arg === '--init-file') {
-      i += 1
-      continue
-    }
-    if (/^-[a-zA-Z]+$/.test(arg)) {
-      if (arg.includes('c')) payloadIndex = i + 1
-      continue
-    }
-    if (arg.startsWith('--')) continue
-    if (!arg.startsWith('+')) {
-      break
-    }
+function shellReadsStdin(args: readonly string[]): boolean {
+  for (const arg of args) {
+    if (arg === '--') return false
+    if (!arg.startsWith('-') || arg === '-') return false
+    if (/^-[a-zA-Z]+$/.test(arg) && arg.includes('s')) return true
   }
-  if (payloadIndex < 0) return undefined
-  return args[payloadIndex]
+  return false
 }
 
 function commandInvocationLoose(
   node: SyntaxNode,
-): { name: string; args: string[]; dropped: boolean; rawArgTexts: string[]; hasHeredoc: boolean } | undefined {
+): {
+  name: string
+  args: string[]
+  dropped: boolean
+  rawArgTexts: string[]
+  hasHeredoc: boolean
+  branchScoped: boolean
+  precededByAnd: boolean
+} | undefined {
   const nameIndex = node.children.findIndex((child) => child.type === 'command_name')
   const nameNode = nameIndex >= 0 ? node.children[nameIndex] : undefined
   const nameWord = nameNode?.children.find((child) => child.isNamed)
@@ -748,7 +977,15 @@ function commandInvocationLoose(
       args.push(value)
     }
   }
-  return { name: normalizeCommandName(rawName), args, dropped, rawArgTexts, hasHeredoc }
+  return {
+    name: normalizeCommandName(rawName),
+    args,
+    dropped,
+    rawArgTexts,
+    hasHeredoc,
+    branchScoped: false,
+    precededByAnd: false,
+  }
 }
 
 function checkScriptOperand(
@@ -861,6 +1098,25 @@ function markWrapperCwd(args: readonly string[], ctx: WorkspaceContext, state: S
   }
 }
 
+function markSudoCwd(args: readonly string[], ctx: WorkspaceContext, state: State): void {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!
+    let target: string | undefined
+    if (arg === '-D' || arg === '--chdir') {
+      target = args[i + 1]
+    } else if (arg.startsWith('--chdir=')) {
+      target = arg.slice('--chdir='.length)
+    } else if (/^-D.+/.test(arg)) {
+      target = arg.slice(2)
+    }
+    if (target !== undefined) {
+      const cls = classifyTarget(target, ctx)
+      if (cls === 'outside' || cls === 'unresolvable') fail(state, 'sudo: chdir outside workspace')
+      return
+    }
+  }
+}
+
 function resolveTarget(raw: string, ctx: WorkspaceContext): string | undefined {
   let p = raw
   if (p === '~') p = ctx.homedir
@@ -885,6 +1141,17 @@ function classifyTarget(raw: string, ctx: WorkspaceContext, cwd = ctx.workspace)
 function isExternalTarget(raw: string, ctx: WorkspaceContext, cwd = ctx.workspace): boolean {
   const cls = classifyTarget(raw, ctx, cwd)
   return cls === 'outside' || cls === 'unresolvable'
+}
+
+function isExternalTargetFromAnyCwd(
+  raw: string,
+  ctx: WorkspaceContext,
+  cwds: ReadonlySet<string>,
+): boolean {
+  for (const cwd of cwds) {
+    if (isExternalTarget(raw, ctx, cwd)) return true
+  }
+  return false
 }
 
 export function hasGitSegment(p: string): boolean {

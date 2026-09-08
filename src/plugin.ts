@@ -1,8 +1,9 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import os from "node:os"
 import path from "node:path"
-import { analyzeCommandString, type DangerousVerdict } from "./analyzer"
-import { analyzeWorkspacePolicy, defaultWorkspaceContext, hasGitSegment, withinWorkspace } from "./workspace-policy"
+import type { DangerousVerdict } from "./analyzer"
+import { analyzeCommandPolicy, type PolicyGate } from "./policy-engine"
+import { defaultWorkspaceContext, hasGitSegment, withinWorkspace } from "./workspace-policy"
 
 export interface BashSentinelOptions {
   audit?: boolean
@@ -52,7 +53,7 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     const command = readCommand(request)
     if (typeof command !== "string" || command.length === 0) return
 
-    const verdict = policyVerdict(command)
+    const verdict = policyVerdict(command, "bash")
     if (verdict !== undefined) {
       if (config.audit) void writeAudit(config.logPath, command, verdict, "escalate", "bash")
       return
@@ -72,7 +73,7 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     const command = readCommand(request)
     if (typeof command !== "string" || command.length === 0) return
 
-    const verdict = policyVerdict(command)
+    const verdict = policyVerdict(command, "external_directory")
     if (verdict !== undefined) {
       if (config.audit) void writeAudit(config.logPath, command, verdict, "escalate", "external_directory")
       return
@@ -108,13 +109,8 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     }
   }
 
-  function policyVerdict(command: string): DangerousVerdict | undefined {
-    const upstream = analyzeCommandString(command)
-    if (config.upstream) return upstream
-    const result = analyzeWorkspacePolicy(command, ctx)
-    if (result.verdict !== undefined) return result.verdict
-    if (result.rmHandled && upstream?.kind === "dangerous" && upstream.command === "rm -rf") return undefined
-    return upstream
+  function policyVerdict(command: string, gate: PolicyGate): DangerousVerdict | undefined {
+    return analyzeCommandPolicy(command, ctx, { upstream: config.upstream, gate })
   }
 
   async function replyOnce(request: AskedEvent): Promise<void> {
@@ -132,15 +128,23 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     const client = input.client as ReplyClient
 
     if (typeof client.permission?.reply === "function") {
-      await client.permission.reply({ requestID: request.id, reply: "once" })
-      return
+      try {
+        await client.permission.reply({ requestID: request.id, reply: "once" })
+        return
+      } catch {
+        // Try the legacy SDK method and raw routes below.
+      }
     }
     if (typeof client.postSessionIdPermissionsPermissionId === "function") {
-      const result = await client.postSessionIdPermissionsPermissionId({
-        path: { id: request.sessionID, permissionID: request.id },
-        body: { response: "once" },
-      })
-      if (!result?.error) return
+      try {
+        const result = await client.postSessionIdPermissionsPermissionId({
+          path: { id: request.sessionID, permissionID: request.id },
+          body: { response: "once" },
+        })
+        if (!result?.error) return
+      } catch {
+        // Try raw routes below.
+      }
     }
 
     const base = input.serverUrl.href.replace(/\/$/, "")

@@ -22,7 +22,7 @@ git -C .reference/kimi-code fetch --depth 1 origin main && git -C .reference/kim
 git -C .reference/opencode fetch --depth 1 origin dev   && git -C .reference/opencode log -1
 ```
 
-Then diff the relevant paths (below), re-verify the integration facts in §2 (they have moved before), update the commit table here and in README.md, and re-run the test suite.
+Then diff the relevant paths (below), reapply the documented local hardening in `src/analyzer.ts`, re-verify the integration facts in §2 (they have moved before), update the commit table here and in README.md, and re-run the test suite.
 
 Ported paths in kimi-code:
 
@@ -73,7 +73,8 @@ opencode.json:  "permission": { "bash": {"*": "ask"}, "edit": {"*": "ask"} }
 
 plugin on permission.asked:
     permission === "bash":
-        verdict = workspacePolicy(command) ?? upstreamVerdict(command)
+        parse command once
+        verdict = compose(workspacePolicy(ast), upstreamVerdict(ast))
         safe                                    → reply "once"
         dangerous | unanalyzable                → do nothing (native dialog)
     permission === "external_directory":
@@ -88,12 +89,13 @@ plugin on permission.asked:
 
 Principle: **inside the workspace everything is allowed; outside, reads are allowed and writes require confirmation.** Enforced over the same syntax tree:
 
-- **rm**: positional targets are resolved against the current abstract cwd. Outside, unresolvable, `.git`, or the workspace/home/system root itself (including `.` at workspace root) → dangerous. In-workspace rm of subpaths is safe regardless of flags (the upstream `rm -rf` verdict is suppressed via the `rmHandled` flag).
+- **rm**: positional targets are resolved against the current abstract cwd. Outside, unresolvable, `.git`, or the workspace/home/system root itself (including `.` at workspace root) → dangerous. In-workspace rm of subpaths is safe regardless of flags (the workspace result explicitly sets `suppressUpstreamRmRf` to override upstream's path-blind rule).
 - **Write-command table** (commands opencode's external-directory scan never sees): `sed -i`, `dd of=`, `rsync`, `install`, `ln`, `tee`, `truncate`, `shred` — target extraction per command, same classification.
 - **Write redirects**: `>`, `>>`, `2>`, `&>`, `<>` targets classified the same way; `/dev/null`, `/dev/stdout`, `/dev/stderr` and fd numbers exempt; unresolvable targets (`> $OUT`) escalate. Note the parser shapes: `2> file` produces a named `file_descriptor` child that must be skipped when finding the target, and `{}` parses as a `concatenation` node.
 - **Escape hatches**: `find -delete/-exec*`, `xargs` whose operands include any write-capable command or shell, command wrappers (`time`/`timeout`/`watch`/`stdbuf`/`ionice` unwrap their inner command; `timeout` consumes one DURATION token), bare shells executing stdin/pipe scripts (`curl | sh`, `bash < x`, `bash <<EOF` — note heredoc nodes attach as siblings of `command` under `redirected_statement`), scripts from outside the workspace or unresolvable (`python /tmp/x.py`, `bash /tmp/x.sh`, `source`/`.`, `python -`, `python $SCRIPT`), inline-code interpreters (`python -c`, `node -e/-p`, `ruby -e`, `perl -e`, `php -r`, any `osascript`), remote execution (`ssh`/`scp`/`sftp` with operands), and `awk` programs matching `system(`, `> "`, or `| "` (scanned on raw arg text because programs contain `$` and get literal-dropped).
 - **Inline-code interpreters**: `python -c`, `node -e/-p/--eval`, `ruby -e`, `perl -e`, `php -r`, and any `osascript`. Running files / modules stays allowed.
-- **cwd tracking**: `cd`/`pushd` update an abstract cwd as commands are visited, and relative write/script/git targets resolve against it. Unresolvable cwd changes combined with a relative write escalate. An external or unresolvable `env -C`/`--chdir` fails closed until wrapper-local cwd is represented explicitly in the command IR.
+- **cwd tracking**: `cd`/`pushd` update a conservative set of possible cwd values. Conditional lists, branches, loops, command substitutions, functions, and subshells retain alternate cwd states; a relative path must be safe from every possible cwd. Unresolvable cwd changes combined with a relative write escalate. External or unresolvable `env -C`/`--chdir` and `sudo -D`/`--chdir` fail closed.
+- **External-directory confidence**: the workspace pass also reports whether every command's external-path behavior has an explicit model. The external gate auto-approves only when the normal verdict is safe and this confidence bit is true; unknown tools and unmodeled script execution stay with the human.
 - Unresolvable operands on write commands (`rm $TARGET`) and un-literal command names escalate (fail-safe).
 - Wrappers (`sudo`/`env`/`nohup`/...), nested shells (`sh -c` payload re-analysis), `eval`, and `busybox` are unwrapped with the same machinery as the upstream analyzer.
 
@@ -121,6 +123,8 @@ opencode-bash-sentinel/
 │   │   ├── budget.ts
 │   │   └── index.ts
 │   ├── analyzer.ts        # ported dangerous-command-ask.ts (DI stripped, pure functions)
+│   ├── policy-engine.ts   # parse-once orchestration and policy composition
+│   ├── workspace-policy.ts # path/effect rules and possible-cwd analysis
 │   ├── plugin.ts          # OpenCode plugin entry (event hook + reply glue)
 │   └── index.ts           # exports the Plugin
 ├── test/
@@ -146,7 +150,7 @@ opencode-bash-sentinel/
 
 1. **Copy the parser** from `.reference/kimi-code/packages/tree-sitter-bash/src/*` into `src/parser/`. It compiles standalone; the only change is rewriting the `#/*` import alias to relative imports (`./budget`, `./grammar`, ...). Its parse result is `{ ok: true, rootNode, hasError } | { ok: false, reason: 'aborted' }`.
 
-2. **Copy the analyzer** from `packages/agent-core-v2/src/agent/permissionPolicy/policies/dangerous-command-ask.ts` into `src/analyzer.ts`. Remove DI decorators and `IBashParserService`/config imports. Provide the parse function as `(source: string) => BashParseResult`, adapting `rootNode` → `root` (replicate the trivial `snapshot()` from upstream's `bashParserService.ts` — it just rebuilds plain DTO nodes). Keep every constant and heuristic **verbatim** — they encode real attack variants (`sudo rm -rf /`, `env VAR=x rm -rf /`, `sh -c 'rm -rf /'`, `busybox rm -rf /`, `/bin/rm -rf /`, `RM -RF`, `rm -rf.exe`, ...).
+2. **Refresh the analyzer** from `packages/agent-core-v2/src/agent/permissionPolicy/policies/dangerous-command-ask.ts`. Remove DI decorators and `IBashParserService`/config imports, then retain the local nested-shell and `sudo --chdir` hardening called out in the source header. Provide the parse function as `(source: string) => BashParseResult`, adapting `rootNode` → `root`.
 
 3. **Write the plugin entry** (`src/plugin.ts`):
 

@@ -1,7 +1,8 @@
 // Ported from MoonshotAI/kimi-code (MIT), commit f88ed6d45bcf5ea358c173af7a3568b57ba9bd38:
 //   packages/agent-core-v2/src/agent/permissionPolicy/policies/dangerous-command-ask.ts
 // DI decorators, config/mode gating, and policy-chain types were removed; every
-// constant and heuristic below is kept verbatim — they encode real attack
+// The upstream rules remain the baseline, with narrowly documented local
+// hardening for newer wrapper/shell option forms. They encode real attack
 // variants (sudo/env/sh -c/busybox wrappers, path-stripped and .exe-suffixed
 // command names, dd raw-device targets, rm -rf flag combinations, ...).
 
@@ -49,6 +50,8 @@ export const PRIVILEGE_VALUE_OPTIONS: ReadonlySet<string> = new Set([
   '--close-from',
   '-T',
   '--command-timeout',
+  '-D',
+  '--chdir',
   '-U',
   '--other-user',
   '-r',
@@ -135,6 +138,14 @@ export function analyzeSource(
   parse: (source: string) => BashParseResult,
 ): DangerousVerdict | undefined {
   const parsed = parse(source);
+  return analyzeParsedSource(parsed, depth, parse);
+}
+
+export function analyzeParsedSource(
+  parsed: BashParseResult,
+  depth: number,
+  parse: (source: string) => BashParseResult,
+): DangerousVerdict | undefined {
   if (!parsed.ok || parsed.hasError) return { kind: 'unanalyzable' };
   const commands: SyntaxNode[] = [];
   collectCommands(parsed.root, commands);
@@ -214,25 +225,9 @@ function analyzeInvocation(
     return analyzeInvocation(normalizeCommandName(inner), rest.slice(1), dropped, depth, parse);
   }
   if (NESTED_SHELLS.has(name)) {
-    let payloadIndex = -1;
-    for (let i = 0; i < args.length; i += 1) {
-      const arg = args[i]!;
-      if (arg === '--') break;
-      if (arg === '-O' || arg === '+O' || arg === '-o' || arg === '--rcfile' || arg === '--init-file') {
-        i += 1;
-        continue;
-      }
-      if (/^-[a-zA-Z]+$/.test(arg)) {
-        if (arg.includes('c')) payloadIndex = i + 1;
-        continue;
-      }
-      if (arg.startsWith('--')) continue;
-      if (!arg.startsWith('+')) {
-        break;
-      }
-    }
-    if (payloadIndex < 0) return dropped ? { kind: 'unanalyzable' } : undefined;
-    const payload = args[payloadIndex];
+    const nested = nestedShellCommand(args);
+    if (!nested.found) return dropped ? { kind: 'unanalyzable' } : undefined;
+    const payload = nested.payload;
     if (payload === undefined || depth >= MAX_NESTED_SHELL_DEPTH) {
       return { kind: 'unanalyzable' };
     }
@@ -303,6 +298,29 @@ export function normalizeCommandName(raw: string): string {
   name = name.toLowerCase();
   if (name.endsWith('.exe')) name = name.slice(0, -'.exe'.length);
   return name;
+}
+
+export type NestedShellCommand =
+  | { readonly found: false }
+  | { readonly found: true; readonly payload: string | undefined };
+
+export function nestedShellCommand(args: readonly string[]): NestedShellCommand {
+  let payloadIndex = -1;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (arg === '--') break;
+    if (arg === '-O' || arg === '+O' || arg === '-o' || arg === '--rcfile' || arg === '--init-file') {
+      i += 1;
+      continue;
+    }
+    if (/^-[a-zA-Z]+$/.test(arg)) {
+      if (arg.includes('c')) payloadIndex = i + 1;
+      continue;
+    }
+    if (arg.startsWith('--')) continue;
+    if (!arg.startsWith('+')) break;
+  }
+  return payloadIndex < 0 ? { found: false } : { found: true, payload: args[payloadIndex] };
 }
 function dropLeadingOptions(args: readonly string[], valueOptions: ReadonlySet<string>): string[] {
   for (let i = 0; i < args.length; i += 1) {

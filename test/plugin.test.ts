@@ -79,6 +79,25 @@ describe("bash gate", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it("falls through when a newer SDK reply method fails", async () => {
+    const modernReply = vi.fn().mockRejectedValue(new Error("unsupported route"))
+    const legacyReply = vi.fn().mockResolvedValue({ error: undefined })
+    const hooks = await BashSentinelPlugin(
+      makeInput({
+        client: {
+          permission: { reply: modernReply },
+          postSessionIdPermissionsPermissionId: legacyReply,
+        },
+      }),
+      undefined,
+    )
+    await emit(hooks, askedEvent())
+
+    expect(modernReply).toHaveBeenCalledTimes(1)
+    expect(legacyReply).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it("writes outside the workspace escalate (no reply)", async () => {
     const legacyReply = vi.fn()
     const hooks = await BashSentinelPlugin(
@@ -188,6 +207,29 @@ describe("external_directory gate", () => {
     await emit(
       hooks,
       askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts > out.txt" } }),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not auto-approve external paths for unmodeled commands", async () => {
+    const hooks = await makePlugin()
+    for (const command of [
+      "curl -o /tmp/out https://example.invalid/x",
+      "tar -xf archive.tar -C /tmp",
+      "cpio -id --directory=/tmp < archive.cpio",
+      "git clone https://example.invalid/repo /tmp/repo",
+      `awk -v out=/tmp/x 'BEGIN { print 1 > out }'`,
+    ]) {
+      await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command } }))
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("still approves modeled external reads with internal writes", async () => {
+    const hooks = await makePlugin()
+    await emit(
+      hooks,
+      askedEvent({ permission: "external_directory", metadata: { command: "cp /etc/hosts local-copy" } }),
     )
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
