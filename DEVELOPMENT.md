@@ -13,7 +13,7 @@ This document defines the target policy for the next implementation revision. Th
 
 That implementation remains the runtime behavior until it is replaced. Documentation was intentionally updated first so the product contract can be reviewed before code changes begin.
 
-The migration must not be presented as complete until the target decision table is implemented and its tests pass.
+The migration must not be presented as complete until the three-situation contract is implemented and its tests pass.
 
 ## 2. Product objective
 
