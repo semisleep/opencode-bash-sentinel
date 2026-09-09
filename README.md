@@ -1,77 +1,191 @@
 # opencode-bash-sentinel
 
-AST-based bash command gate for [OpenCode](https://opencode.ai) — silently auto-approves commands that satisfy its documented policy and trust model, and escalates dangerous or un-analyzable ones to the native approval dialog.
+An AST-based Bash permission helper for [OpenCode](https://opencode.ai). It silently approves common commands that match a small, documented policy and leaves everything else to OpenCode's native approval dialog.
 
-The analysis engine is ported from Moonshot AI's open-source **Kimi Code** CLI (MIT): a pure-TypeScript bash parser (`tree-sitter-bash`-compatible syntax trees) plus its `dangerous-command-ask` policy, wrapped as an OpenCode plugin.
+> No LLM calls and no API cost. Analysis is deterministic and runs locally.
 
-> No LLM calls, no API cost — pure deterministic syntax-tree analysis, runs offline.
+## Status
 
----
+The policy documented below is the target for the next implementation revision. The current source still contains the earlier positive-trust policy and Kimi dangerous-command composition. Until migration is complete, do not assume every target-policy example matches the released behavior.
 
-## Why
+## Goal
 
-OpenCode's built-in bash permissions offer two extremes:
+Sentinel exists to remove a useful majority of routine permission prompts—roughly 70–80% is a successful outcome—without trying to classify every possible Bash command.
 
-| Option | Behavior | Weakness |
-|---|---|---|
-| Static rules (`"bash": {"git status*": "allow"}`) | String-prefix/wildcard matching | Not semantic: unaware of wrappers (`sudo`, `env`, `sh -c`), pipes/compounds, or variable expansion. Fails open on unknown variants. |
-| `--auto` mode | Approve everything not denied | No risk analysis — a typo'd `rm -rf` sails through. |
+Sentinel is deliberately not:
 
-This plugin parses each command into a syntax tree and applies a positive trust policy. It auto-approves only when every executable is explicitly recognized and every modeled effect satisfies the workspace policy. Unknown commands, untrusted executable paths, opaque constructs, malformed input, and parser failures stay at the native approval dialog. The final decision is **default-deny**: absence of a known danger is not evidence of safety.
+- a Bash security sandbox;
+- a proof of a process's eventual filesystem or network effects;
+- a complete catalogue of safe and dangerous commands;
+- responsible for making uncommon, dynamic, or deeply nested commands prompt-free.
 
-## How it works
+A harmless command may still require approval when it falls outside the supported subset. That is expected behavior, not a coverage bug.
 
-The plugin enforces one principle over every bash command, external-directory request, and file edit:
+## Target policy
 
-| | Inside your workspace | Outside your workspace |
-|---|---|---|
-| **Recognized read** | runs silently | runs silently |
-| **Recognized write** | runs silently | **you get the native approval dialog** |
-| **Unknown/unmodeled** | **you get the native approval dialog** | **you get the native approval dialog** |
+"Workspace" means the project worktree supplied by OpenCode. Sentinel classifies each recognizable operation into one of three situations. Each situation has a different rule; network activity is not treated as a workspace path.
 
-"Workspace" is your project directory (git worktree when available). Direct path writes to `.git`, removal or destructive metadata operations on the workspace root (`rm -rf ./`, `chmod 000 .`, `touch .`), writes outside the workspace including `~` and `/`, and unresolvable write targets (`rm $TARGET`) always escalate — fail-safe. Trusted local Git subcommands are the deliberate exception: Git may maintain its own `.git` data internally.
+### 1. Clearly inside the workspace
 
-On top of the path policy, the ported Kimi dangerous-command rules still apply everywhere: `sudo`/`env`/`sh -c`/`busybox` wrappers are unwrapped recursively, and `shutdown`/`mkfs*`/`dd`-to-raw-devices and friends escalate regardless of path. The positive trust pass then rejects anything that was not explicitly recognized, including literal but unknown command names.
+This situation applies when Sentinel recognizes an operation and every relevant filesystem target resolves inside the workspace, or when an explicit workspace trust rule applies.
 
-## What gets escalated (examples)
+There are two red lines:
 
-- Any write outside the workspace: `rm ~/.zshrc`, `sed -i s/a/b/ /etc/hosts`, `echo x > /tmp/out`, `sudo cp proj /usr/local/bin/x`, `env mv proj /tmp/`, `sudo chmod`/`chown`/`mkdir`/`touch` on external paths, `tee /tmp/log`, `rsync src/ /backup/`, `install`, `ln`, `truncate`, `shred`, `dd of=/tmp/img`
-- Mutating `git` on another repository: `git -C /elsewhere checkout`, `git --git-dir=...` (read-only subcommands like `git -C /elsewhere log` stay silent)
-- Redirects (`>`, `>>`, `2>`, `&>`) whose target is outside the workspace, unresolvable (`> $OUT`), or inside `.git`
-- Escape hatches: `find ... -delete` / `-exec`, write-capable or option-sensitive `xargs` payloads (`xargs rm`, `xargs file --compile`), command wrappers (`time rm x`, `timeout 10 rm x`, `watch ...`), inline-code interpreters (`python -c`, `node -e`, `ruby -e`, `php -r`, any `osascript`), pipe-executed shells (`curl ... | sh`), scripts from outside the workspace even after interpreter value options (`python -W ignore /tmp/x.py`, `bash -O extglob /tmp/x.sh`, `node --require local-helper /tmp/x.js`), bare interpreters that can read code from stdin (`python`, `bash -O extglob`), `source /tmp/env`, heredoc/stdin scripts, remote execution (`ssh host cmd`, `scp`), and `awk` programs using `system()` or file redirection
-- `cd` outside the workspace followed by a relative write (`cd /tmp && echo x > f`)
-- Sensitive environment assignments or shell-variable mutations that can redirect execution or storage (`GIT_DIR`, `GIT_WORK_TREE`, `HOME`, `PATH`, `BASH_ENV`, `LD_PRELOAD`, `printf -v PATH ...`, ...)
-- External-directory requests from commands whose path effects are not explicitly modeled (`curl -o`, `tar -C`, custom CLIs, package managers, ...)
-- Unknown commands and executable lookalikes outside the workspace (`custom-cli`, `/tmp/ls`), unrecognized `git` subcommands and remote operations such as `git push`, and environment-prefixed commands whose behavior cannot be proven (`FOO=bar tool`)
-- Command-specific output/escape channels such as `find -fprint /tmp/out`, remote `rsync`, `rsync --log-file=/tmp/log`, sed `e`/`w` programs, `rg --pre`, `file --compile`, opaque interpreter preloads (`node --require package server.js`), external Ruby/Perl `-I` search paths, `install --strip-program`, and any external target among the multiple operands of `install -d`
-- Catastrophic targets: workspace-root removal/destructive metadata operations, writes to `~` or `/`, and direct `.git` path writes
-- The upstream Kimi dangerous list: `sudo rm -rf ...`, `shutdown`, `reboot`, `mkfs*`, `init 0/6`, `systemctl poweroff`, `dd of=/dev/sda`, ... The path-aware workspace rule deliberately overrides Kimi's path-blind `rm -rf` match only when every target is a verified workspace subpath, including through recognized wrappers.
+1. Directly deleting, removing, or moving away the workspace root asks.
+2. Directly modifying `.git` with an ordinary filesystem command asks. Git commands may maintain their own repository metadata.
 
-## What runs silently (examples)
+After those checks, every other recognized workspace operation is approved, whether it reads, writes, or deletes workspace subpaths:
 
-`git status`, `ls -la`, `rg foo src/`, `npm test`, `cat /etc/hosts`, `cd /tmp && ls`, `rm -rf build/`, `echo x > out.txt`, `sed -i s/a/b/ src/file.ts`, `python script.py` / `bash scripts/build.sh` / `./scripts/check` (workspace scripts), explicitly listed development tools, and edits to lexical paths inside the workspace — no keystrokes.
+~~~bash
+rg TODO src/
+echo enabled > config/local.env
+sed -i 's/old/new/' src/config.ts
+rm -rf build/
+~~~
 
-External-directory permission and Bash-risk permission are intentionally independent. A dangerous command that also accesses an external directory may therefore show two dialogs: approval of directory access is not treated as approval of the command's separate Bash risk.
+Direct root destruction and direct `.git` writes ask:
 
-## Trust boundary and limitations
+~~~bash
+rm -rf .
+mv /path/to/workspace /tmp/old-workspace
+echo broken > .git/config
+~~~
 
-This plugin is a permission heuristic, not a sandbox or a proof of a process's eventual effects. It analyzes the submitted Bash command line; it does not inspect or sandbox the contents of scripts, binaries, package hooks, build tools, or other programs that the command starts.
+The red lines protect only effects visible in command syntax. They cannot constrain arbitrary behavior hidden inside a script, package hook, binary, or development tool.
 
-Two deliberate exceptions remain. First, workspace scripts and executables such as `python script.py`, `bash scripts/build.sh`, and `./scripts/check` are trusted without inspecting their contents. Second, a finite allowlist of common development tools (`npm`, `pnpm`, `yarn`, `bun`, `make`, `cargo`, `go`, test/format/lint tools, and similar entries in the source policy) is trusted without inspecting project hooks or configuration. Such code can still write outside the workspace, delete files, access credentials, or use the network internally. These are explicit trust boundaries, not analyzer proofs; use OS/container sandboxing when the workspace is not trusted.
+#### Workspace scripts
 
-Workspace containment is currently lexical. A workspace path that traverses a symlink to an external target is still treated as inside the workspace. This is the other known containment limitation and is not resolved by the default-deny command policy.
+A directly invoked workspace script belongs to this first situation only when all of these checks succeed:
 
-Bare allowlisted command names are trusted by name; the plugin does not resolve the ambient `PATH` or prove which binary the shell will launch. Assigning a sensitive variable such as `PATH` in the submitted command is detected, but a pre-existing modified environment is outside the command-line analysis. Use a controlled environment or sandbox when executable provenance matters.
+1. Its entry path resolves lexically inside the workspace.
+2. The file exists in the current `HEAD` and is tracked by Git.
+3. It has no staged or unstaged change relative to `HEAD`.
+4. Its visible arguments contain no explicit external path or unresolvable/dynamic path that could plausibly select an external target.
+
+This covers direct executables and supported interpreter/source forms:
+
+~~~bash
+./scripts/check
+bash scripts/build.sh
+python tools/check.py
+node scripts/build.js
+source scripts/env.sh
+~~~
+
+Untracked or modified scripts, external scripts, inline code, stdin/heredoc programs, dynamic script paths, and scripts with visibly external or ambiguous path arguments move to the third situation and ask unless another exact rule applies.
+
+Only the entry script and visible command line are checked. Imported modules, sourced dependencies, configuration files, generated files, and runtime behavior are not recursively inspected. “Committed and unchanged” is a trusted repository baseline, not proof that the script stays inside the workspace.
+
+### 2. Clearly outside the workspace
+
+This situation applies when Sentinel recognizes a filesystem operation and at least one relevant target resolves outside the workspace. A mixture of inside and outside targets is treated as outside.
+
+A finite set of common, simple read-only forms is approved:
+
+~~~bash
+cat /etc/hosts
+ls -la /tmp
+rg pattern /usr/include
+git -C /another/repository log -1
+~~~
+
+Recognized external writes ask:
+
+~~~bash
+echo x > /tmp/out
+rm ~/.zshrc
+sed -i 's/a/b/' /etc/hosts
+git -C /another/repository checkout main
+~~~
+
+The external-read set is intentionally finite. Unsupported options, embedded execution such as `find -exec`, and commands whose effects are unclear remain with the user instead of growing into a complete command-language analyzer.
+
+### 3. No workspace relationship, or cannot determine it
+
+This situation covers both:
+
+- operations that naturally have no filesystem workspace, such as system-information and network commands;
+- operations whose relationship to the workspace cannot be determined because the command, syntax, or relevant target is unknown or dynamic.
+
+Only exact, explicitly reviewed command-and-option profiles are approved here. Everything else asks. Typical informational profiles may include:
+
+~~~bash
+date
+uname -a
+uptime
+~~~
+
+Network access belongs here, not in “outside the workspace.” A narrowly reviewed download-to-stdout form may be approved:
+
+~~~bash
+curl -fsSL https://example.com/data
+~~~
+
+Upload, explicit mutation, remote execution, credential-bearing or dynamic requests, file-producing options, and unsupported network options ask:
+
+~~~bash
+curl -X POST https://example.com/action
+curl --upload-file secret.txt https://example.com/
+ssh host command
+~~~
+
+An approved download form is a product trust decision, not proof that an HTTP request has no remote side effect or data exposure.
+
+Parser failure, resource-budget exhaustion, dynamic command names, unresolved relevant paths, and unsupported command structures also land in this third situation and ask.
+
+#### Explicit npm exception
+
+`npm run ...` is an exact trusted-workflow rule in the third situation. It is approved without inspecting `package.json`, lifecycle hooks, transitive tools, network activity, or the script it ultimately executes. A newly modified npm script can therefore perform external writes or either workspace red line without Sentinel seeing that internal behavior.
+
+Other development tools should be added only as explicit, documented decisions driven by real prompt frequency.
+
+### Commands containing more than one operation
+
+Each recognizable operation is classified separately. The complete Bash command is approved only when every operation passes the rule for its situation.
+
+For example:
+
+~~~bash
+curl -fsSL https://example.com/data > result.json
+~~~
+
+The network request is a third-situation profile and the redirect is a first-situation workspace write. If both profiles are approved, the complete command is approved. Changing the redirect to `/tmp/result.json` creates a second-situation external write, so the complete command asks.
+
+Nested commands and wrappers are analyzed only where the implementation has a small, explicit rule. There is no requirement to support arbitrary composition.
+
+## Trust boundary and known limitations
+
+Sentinel is a permission heuristic. It analyzes submitted command text and Git state; it does not sandbox the resulting process.
+
+- Workspace containment is lexical. A path inside the workspace that traverses a symlink to an external target is still treated as inside.
+- A committed and unchanged script is trusted as repository baseline, not proven safe.
+- `npm run ...` is an opaque trusted workflow.
+- Script dependencies and runtime-computed targets are not inspected.
+- Bare command names are not resolved to prove which executable the ambient `PATH` will launch.
+- Path comparison is literal and case-sensitive; case-insensitive filesystem behavior is not modeled.
+- Approved network profiles are explicit trust decisions, not proof of remote read-only behavior.
+- Network access and data exfiltration are not sandboxed.
+- Audit logs contain complete command text and may contain credentials or tokens.
+- `pwsh` and `cmd` are outside the Bash-only scope.
+
+Use OS- or container-level sandboxing when these boundaries are insufficient.
+
+## OpenCode behavior
+
+The Bash-risk and `external_directory` permissions are separate OpenCode requests. One command may therefore produce two dialogs. Approval of directory access is not approval of a separate Bash-risk request.
+
+- OpenCode `deny` rules win before Sentinel is consulted.
+- A session-scoped “always allow” answer bypasses Sentinel for later matching commands.
+- `--auto` mode makes Sentinel moot because OpenCode already approves everything.
+- Sentinel escalates by leaving the native dialog unanswered; it never permanently blocks user approval.
 
 ## Installation
 
-Verified against opencode 1.18.29 (release binary). Requires opencode >= 1.18.0.
+Verified against OpenCode 1.18.29. Requires OpenCode `>=1.18.0 <2.0.0`.
 
-Add to your config — a project's `opencode.json`, or the global `~/.config/opencode/opencode.json` (`.jsonc` also works):
+From a local checkout:
 
-**From a local checkout** (works today, changes take effect on next launch):
-
-```json
+~~~json
 {
   "plugin": ["/absolute/path/to/opencode-bash-sentinel"],
   "permission": {
@@ -79,11 +193,11 @@ Add to your config — a project's `opencode.json`, or the global `~/.config/ope
     "edit": { "*": "ask" }
   }
 }
-```
+~~~
 
-**From npm** (once published):
+From npm, once published:
 
-```json
+~~~json
 {
   "plugin": ["opencode-bash-sentinel"],
   "permission": {
@@ -91,52 +205,38 @@ Add to your config — a project's `opencode.json`, or the global `~/.config/ope
     "edit": { "*": "ask" }
   }
 }
-```
+~~~
 
-The `permission` entries route every bash command and file edit through the approval flow — the plugin then auto-replies to positively trusted ones in milliseconds (same mechanism OpenCode's own auto mode uses), so unknown and risky cases remain at the dialog. `edit` routing is optional but recommended: without it, in-workspace edits follow your normal opencode rules. Project-level `plugin`/`permission` config merges with the global config.
+These entries route requests through OpenCode's approval flow. Sentinel replies `once` only to cases its policy approves. The `edit` route is optional but recommended for consistent workspace and `.git` handling.
 
 ## Options
 
-```json
+~~~json
 {
   "plugin": [
     ["opencode-bash-sentinel", { "audit": true, "logPath": "/tmp/sentinel.jsonl" }]
   ]
 }
-```
+~~~
 
 | Option | Default | Description |
 |---|---|---|
-| `audit` | `false` | Append one JSONL line per decision (`timestamp`, `gate`, `command`, `verdict`, `action`) |
-| `logPath` | `~/.local/share/opencode/bash-sentinel-audit.jsonl` | Where the audit log is written |
+| `audit` | `false` | Append one JSONL line per decision |
+| `logPath` | `~/.local/share/opencode/bash-sentinel-audit.jsonl` | Audit-log destination |
 
-## Behavior notes
+## Provenance
 
-- **`deny` rules always win.** Commands matched by a `deny` rule fail before the plugin is ever consulted.
-- **`"always allow" bypasses the plugin** for the rest of the session. If you answer "always" on a dialog, that pattern is approved without analysis afterwards.
-- **Unknown commands fail closed at every command gate.** A literal name is not enough: it must be present in the positive trust policy, and an executable containing a path must be a known system executable path or a workspace-local executable covered by the workspace-script trust boundary.
-- **The legacy `upstream` option was removed.** It bypassed the workspace and positive-trust policies and therefore contradicted the default-deny invariant. Supplying the old option has no effect.
-- **Workspace paths are lexical, not filesystem-canonical.** A literal path inside the workspace that traverses a symlink to an external target can escape the policy. Use a sandbox when this matters.
-- **Reads, network access, and data exfiltration inside trusted scripts/tools are not sandboxed.** Unknown network tools and `git push` now ask, but an allowed workspace script or development tool can still perform those operations internally.
-- **Audit logs contain the complete command text.** When audit mode is enabled, command-line credentials or tokens are written to the configured log path.
-- **Path comparison is literal and case-sensitive**; macOS case-insensitive filesystems are not modeled.
-- **`pwsh`/`cmd` tools are out of scope** (bash analysis only).
-- **`--auto` mode makes this plugin moot** — in auto mode the TUI already approves everything.
-- Dangerous commands are *escalated*, never blocked: the native dialog still lets you approve them manually.
+The Bash parser and current transitional dangerous-command analyzer were adapted from Moonshot AI's open-source [Kimi Code](https://github.com/MoonshotAI/kimi-code) CLI under MIT. Sentinel's policy has since diverged: Kimi's dangerous-command policy is not the design authority for the target implementation.
 
-## Provenance / upstream versions
-
-The ported engine is pinned to these upstream commits (see [DEVELOPMENT.md](DEVELOPMENT.md) for how to refresh them):
-
-| Upstream | Repository | Commit | Date |
-|---|---|---|---|
-| Kimi Code | https://github.com/MoonshotAI/kimi-code | `f88ed6d45bcf5ea358c173af7a3568b57ba9bd38` | 2026-09-08 |
-| OpenCode (integration contract verified against) | https://github.com/anomalyco/opencode | `ecbc6ccac85b3e8087b6445e584318419b9e2b34` (branch `dev`); e2e-tested on release binary 1.18.29 | 2026-09-07 |
+| Upstream | Commit | Use |
+|---|---|---|
+| Kimi Code | `f88ed6d45bcf5ea358c173af7a3568b57ba9bd38` | Parser source; historical analyzer source |
+| OpenCode | `ecbc6ccac85b3e8087b6445e584318419b9e2b34` (`dev`); e2e-tested on 1.18.29 | Integration contract |
 
 ## License
 
-MIT. Portions Copyright (c) 2026 Moonshot AI, Inc., adapted from [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code) (MIT) — see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+MIT. Portions Copyright (c) 2026 Moonshot AI, Inc. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
 
 ## Development
 
-Implementation details, verified integration facts, and the test plan live in [DEVELOPMENT.md](DEVELOPMENT.md).
+The target architecture, current migration gap, integration facts, and test strategy live in [DEVELOPMENT.md](DEVELOPMENT.md).

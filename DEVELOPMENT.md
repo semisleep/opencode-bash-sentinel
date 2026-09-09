@@ -1,271 +1,350 @@
-# Development notes (maintainer-facing)
+# Development notes
 
-Implementation details for `opencode-bash-sentinel`. User-facing documentation is in [README.md](README.md).
+Maintainer-facing product definition and implementation plan for `opencode-bash-sentinel`. User-facing behavior and limitations are in [README.md](README.md).
 
----
+## 1. Migration status
 
-## 1. Upstream snapshots
+This document defines the target policy for the next implementation revision. The current source still implements the earlier design:
 
-The engine is ported — not reimplemented — from two upstream repositories. Both were cloned into `.reference/` (gitignored) and the code facts below were verified by reading them at these exact commits:
+- a ported Kimi dangerous-command analyzer;
+- a separate positive executable-trust pass;
+- command-specific workspace/external-effect modeling;
+- final composition through several cross-cutting confidence flags.
 
-| Upstream | Repository | Commit | Date | What we take from it |
-|---|---|---|---|---|
-| Kimi Code | https://github.com/MoonshotAI/kimi-code | `f88ed6d45bcf5ea358c173af7a3568b57ba9bd38` | 2026-09-08 | bash parser + command analyzer (copied source) |
-| OpenCode | https://github.com/anomalyco/opencode | `ecbc6ccac85b3e8087b6445e584318419b9e2b34` (branch `dev`); e2e-tested on release binary **1.18.29** | 2026-09-07 | plugin API / permission flow contract (reference only, nothing copied) |
+That implementation remains the runtime behavior until it is replaced. Documentation was intentionally updated first so the product contract can be reviewed before code changes begin.
 
-### Refreshing the snapshots
+The migration must not be presented as complete until the target decision table is implemented and its tests pass.
 
-When updating the port against newer upstream code:
+## 2. Product objective
+
+Sentinel is a prompt-reduction tool. Its job is to auto-approve a useful majority of common, readily classifiable commands. Approximately 70–80% prompt reduction is sufficient; completeness is not a goal.
+
+The analyzer must remain willing to ask about harmless commands. A false prompt is an acceptable cost when syntax or effects fall outside the supported subset. Expanding support is justified by frequent real-world prompts, not by the theoretical expressiveness of Bash.
+
+Sentinel is not:
+
+- a sandbox;
+- a general-purpose command safety classifier;
+- a proof of eventual process effects;
+- an exhaustive parser for every command's option language;
+- responsible for making unusual or deeply nested commands prompt-free.
+
+## 3. Policy contract
+
+### 3.1 Three situations
+
+Classification starts with an operation's relationship to the filesystem workspace:
+
+```ts
+type Situation =
+  | "workspace-inside"
+  | "workspace-outside"
+  | "workspace-neutral-or-indeterminate"
+```
+
+1. **Clearly inside the workspace:** apply the two red lines, then allow every other recognized workspace operation.
+2. **Clearly outside the workspace:** allow only finite recognized read-only forms; ask for writes and unsupported forms.
+3. **No workspace relationship, or indeterminate:** allow only exact reviewed command-and-option profiles; ask for everything else.
+
+“Indeterminate” is not the same as a parser failure. The analyzer may understand that `curl` performs network access while correctly deciding that a network request has no filesystem workspace classification. It may also parse a dynamic filesystem command but be unable to resolve its target. Both use the third situation, but should retain different audit reasons.
+
+### 3.2 Situation 1: clearly inside the workspace
+
+Starting a process with the workspace as its cwd does not prove that it stays inside the workspace. A command counts as a workspace non-red-line operation only when:
+
+- a supported command profile identifies its relevant visible targets as workspace paths; or
+- an explicit trust-boundary rule classifies it as a trusted workflow.
+
+The term explicitly excludes the two red lines below. Classification checks them first; only remaining workspace-contained operations are allowed.
+
+The implementation analyzes command text, not runtime behavior. All guarantees are therefore limited to recognized syntax and visible effects.
+
+#### Workspace red lines
+
+There are two red lines:
+
+1. Direct deletion, removal, or moving-away of the workspace root.
+2. Direct modification of a `.git` path by ordinary filesystem operations.
+
+Deleting workspace subpaths is allowed. Git itself may update its repository metadata; a supported local Git operation is not considered a direct `.git` write.
+
+The red lines are not sandbox guarantees. Scripts, binaries, npm hooks, and other opaque processes can perform the same operations internally without the analyzer seeing them.
+
+#### Workspace script trust rule
+
+A workspace script may be treated as belonging to situation 1 only when:
+
+1. its entry path is literal and resolves lexically inside the workspace;
+2. the path is present in the current `HEAD`;
+3. neither the index nor working-tree copy differs from `HEAD`;
+4. Git status can be determined without ambiguity;
+5. its visible arguments contain no explicit external filesystem path and no dynamic or unresolvable path expression.
+
+This covers direct executable paths and supported interpreter/source forms:
 
 ```bash
-git -C .reference/kimi-code fetch --depth 1 origin main && git -C .reference/kimi-code log -1
-git -C .reference/opencode fetch --depth 1 origin dev   && git -C .reference/opencode log -1
+./scripts/check
+bash scripts/build.sh
+python tools/check.py
+node scripts/build.js
+source scripts/env.sh
 ```
 
-Then diff the relevant paths (below), reapply the documented local hardening in `src/analyzer.ts`, re-verify the integration facts in §2 (they have moved before), update the commit table here and in README.md, and re-run the test suite.
+Untracked, modified, external, ignored, generated, or unresolved scripts do not qualify. Neither do dynamic script paths, inline/stdin/heredoc programs, ambiguous Git/submodule state, explicit external argument paths, or unresolved dynamic path expressions.
 
-Ported paths in kimi-code:
+Argument screening is syntactic. Absolute paths, `~` paths, and relative paths with explicit path syntax are classified; ordinary bare values are not assumed to be paths. Only the entry script is compared with `HEAD`. Imported modules, sourced dependencies, configuration, generated inputs, and runtime behavior are not recursively checked.
 
-- `packages/tree-sitter-bash/src/` → our `src/parser/` (lexer, parser, grammar, node, parse, budget, index; ~5,000 lines, zero runtime deps)
-- `packages/agent-core-v2/src/agent/permissionPolicy/policies/dangerous-command-ask.ts` → our `src/analyzer.ts` (351 lines)
-- Optional context: `packages/agent-core-v2/src/agent/permissionPolicy/permissionPolicyService.ts` (upstream policy chain), `packages/agent-core-v2/src/app/bashParser/bashParserService.ts` (the `rootNode` → `root` snapshot shim we replicate)
+“Committed and unchanged” is a trusted repository baseline, not proof that the script stays inside the workspace. If Git state cannot be classified clearly, ask.
 
----
+### 3.3 Situation 2: clearly outside the workspace
 
-## 2. Verified integration facts (opencode @ ecbc6cc)
+Recognized writes outside the workspace ask. Recognized reads outside the workspace may be allowed.
 
-All file references are against `.reference/opencode`. These were read from source, not assumed — re-verify after any opencode upgrade.
+External-read support is a finite set of common command profiles. Each profile should accept only simple, well-understood forms. Options that add execution or output behavior—such as preprocessors, `find -exec`, file-producing modes, or an unknown option with relevant semantics—cause `unsupported-or-unknown`.
 
-1. **Rule evaluation is server-side.** `packages/opencode/src/permission/index.ts:67-107` — `deny` short-circuits with an error; `allow` runs silently; `ask` publishes a `permission.asked` event and blocks on a `Deferred` until `reply` resolves it. When **no rule matches, the default action is already `ask`** (`evaluate()` falls back to `{ action: "ask" }`, `permission/index.ts:28-38`). Hence the `"bash": {"*": "ask"}` config exists to *override any user `allow` rules*, not to enable asking.
+There is no requirement to support every read-only utility or every safe option. An unrecognized but harmless read asks.
 
-2. **The permission key is `"bash"`.** The shell tool lives at `packages/opencode/src/tool/shell.ts` and asks with `permission: ShellID.ToolID`, where `ToolID = "bash"` is kept for compatibility (`tool/shell/id.ts:14`).
+If one operation has both workspace and external filesystem targets, classify it as situation 2.
 
-3. **Command text location: `event.properties.metadata.command`** — NOT `metadata.input.command` (an earlier draft of this design doc was wrong). The shell tool calls `ctx.ask({ ..., metadata: { command: input.command } })` (`tool/shell.ts:283-290`), metadata passes through to the request unchanged, and the TUI dialog reads `request.metadata.command`. Keep a defensive fallback to `metadata.input?.command` for older opencode versions, but log-and-verify the actual shape once at runtime during development.
+### 3.4 Situation 3: no workspace relationship, or indeterminate
 
-4. **Plugins receive all server events** via the `event` hook, including `permission.asked` / `permission.replied`, filtered to the plugin's directory (`packages/opencode/src/plugin/index.ts:255-259`). Hook shape: `event: async ({ event }) => {}` with `{ type, properties }`.
+This situation contains two subtypes:
 
-5. **The `permission.ask` plugin hook is NOT wired up.** It exists in `packages/plugin/src/index.ts:261` type definitions but has no invocation site anywhere in the server. A plugin cannot intercept before rule evaluation and cannot upgrade an `allow`/`deny` decision — hence the reverse-mapping design (§4).
+- **workspace-neutral:** the recognized operation has no meaningful filesystem target, such as system information or network access;
+- **indeterminate:** a filesystem relationship may exist, but relevant syntax, commands, or targets cannot be classified.
 
-6. **Replying — e2e-verified transport order (see `src/plugin.ts` `replyOnce`)**. The plugin's v1 `OpencodeClient` does NOT expose `.permission.reply` for the dedicated route. Crucially, **`opencode run` embeds the server in-process without an HTTP listener** — a raw `fetch(serverUrl)` gets ECONNREFUSED even though `serverUrl` is set. The SDK client, however, carries an in-process fetch (reachable as `client._client.getConfig().fetch`). Order:
-   1. `client.permission.reply(...)` — future SDKs exposing the dedicated route (`POST /permission/{requestID}/reply`)
-   2. `client.postSessionIdPermissionsPermissionId(...)` — the deprecated session route, present in the SDK shipped with opencode 1.18.x
-   3./4. raw routes (new, then legacy) through **the SDK client's own configured fetch** (in-process in run mode), falling back to global fetch (serve mode) — survives removal of either SDK method
-   On startup, if no SDK method exists, the plugin probes `GET /permission` through the same transport; if that also fails it logs a loud `opencode-bash-sentinel transport probe failed` warning and writes a `degraded` audit line, instead of silently turning into all-prompts mode. `engines.opencode` is additionally pinned to `>=1.18.0 <2.0.0`.
+Only exact, explicitly reviewed command-and-option profiles are allowed. Examples may include informational commands such as `date`, `uname -a`, and `uptime`.
 
-7. **Auth on the reply route.** The route sits behind `Authorization` middleware, but auth is only enforced when `OPENCODE_SERVER_PASSWORD` is set (`server/auth.ts:24-26`). The plugin runs inside the server process, so when that env var is present, build the same `Basic` header from `OPENCODE_SERVER_USERNAME` (default `opencode`) + `OPENCODE_SERVER_PASSWORD` (`server/auth.ts:36-42`).
+Network commands belong here, not in situation 2. A network profile must be narrow—for example a simple literal HTTP(S) download to stdout with a reviewed set of `curl` flags. Upload, explicit remote mutation, remote execution, credential-bearing or dynamic requests, file-producing options, and unknown options ask. Even an approved download profile is a trust decision, not proof that the remote request is side-effect-free.
 
-8. **No UI conflict.** When the plugin replies before the human does, the server publishes `permission.replied` and the TUI removes the pending dialog (`packages/tui/src/context/sync.tsx:181-192`). This is the same mechanism the TUI's own auto mode uses (`sync.tsx:196-206`). Race is benign: whoever replies first wins; the loser gets `Permission.NotFoundError` (`permission/index.ts:112`) — **catch and ignore**.
+Parser failure, parser-budget exhaustion, dynamic command names, unresolved relevant targets, unsupported wrappers, and structures beyond the supported subset are indeterminate and ask.
 
-9. **`external_directory` is a separate permission.** For commands touching directories outside cwd, the shell tool additionally asks `permission: "external_directory"` (`tool/shell.ts:263-280`). Out of scope: the plugin only handles `permission === "bash"`.
+The intended response to a difficult edge case is usually “unsupported”, not another layer of semantic emulation.
 
-10. **Session-scoped "always" approvals bypass the plugin.** Reply `"always"` pushes the pattern into the in-memory `approved` ruleset (`permission/index.ts:143-151`); later matches resolve `allow` without publishing `permission.asked`. Expected behavior, document it.
+#### npm exception
 
-11. **Plugin loading** (`packages/opencode/src/plugin/loader.ts`, `shared.ts`): npm specs are installed on demand (`Npm.add`); path specs (`./dir`, `file://`, absolute) must contain a `package.json` or an index file. npm plugins are gated by `engines.opencode` semver in their `package.json` — declare one. The plugin function may be the default export or an exported `server` property; options arrive as the second argument.
+`npm run ...` is an explicit trusted workflow and is allowed without inspecting:
 
----
+- whether `package.json` changed;
+- the referenced npm script;
+- lifecycle hooks;
+- transitive commands;
+- runtime paths or effects.
 
-## 3. Design: positive trust + workspace path policy
+This exception may bypass both external-write detection and the two workspace red lines when those effects occur inside npm-controlled code. That limitation is accepted and must remain prominent in README.
 
-Kimi's analyzer remains a source of known-danger signals, but its native semantics are default-approve. The final policy engine must not inherit that default. OpenCode plugins can only answer requests already classified `ask`, so the plugin replies only after a separate positive-trust pass succeeds:
+Do not silently broaden this exception to every development tool. Additional opaque workflows require an explicit product decision and documentation.
 
-```
-opencode.json:  "permission": { "bash": {"*": "ask"}, "edit": {"*": "ask"} }
+### 3.5 Commands containing multiple operations
 
-plugin on permission.asked:
-    permission === "bash":
-        parse command once
-        decision = compose(workspacePolicy(ast), positiveTrust(ast), upstreamVerdict(ast))
-        explicitly trusted and path-safe        → reply "once"
-        unknown | dangerous | unanalyzable      → do nothing (native dialog)
-    permission === "external_directory":
-        same verdict; safe → reply "once" (external reads become silent),
-        dangerous → do nothing (native dialog); any later bash ask is
-        evaluated independently because directory consent is not bash consent
-    permission === "edit":
-        filepath inside workspace and not .git → reply "once"; else stay silent
-```
+A command may contain operations from multiple situations. Classify each one separately and allow the complete Bash command only when every operation is allowed by the rule for its own situation.
 
-### Workspace path policy (`src/workspace-policy.ts` — ours, not ported)
+For `curl -fsSL URL > result.json`, the network request uses a situation-3 profile and the redirect is a situation-1 workspace write. Changing the target to `/tmp/result.json` creates a situation-2 external write, so the complete command asks.
 
-Principle: **only explicitly recognized commands are candidates for approval; recognized writes are allowed inside the workspace, while outside writes require confirmation.** Enforced over the same syntax tree:
+Unsupported nesting or control flow asks; coverage is intentionally bounded.
 
-- **rm**: positional targets are resolved against the current abstract cwd. Outside, unresolvable, `.git`, or the workspace/home/system root itself (including `.` at workspace root) → dangerous. In-workspace rm of subpaths is safe regardless of flags (the workspace result explicitly sets `suppressUpstreamRmRf` to override upstream's path-blind rule).
-- **Write-command table** (commands opencode's external-directory scan never sees): `sed -i`, `dd of=`, `rsync`, `install`, `ln`, `tee`, `truncate`, `shred` — target extraction per command, same classification. `install -d` checks every positional target, rather than applying copy-style “last operand is destination” semantics.
-- **Write redirects**: `>`, `>>`, `2>`, `&>`, `<>` targets classified the same way; `/dev/null`, `/dev/stdout`, `/dev/stderr` and fd numbers exempt; unresolvable targets (`> $OUT`) escalate. Note the parser shapes: `2> file` produces a named `file_descriptor` child that must be skipped when finding the target, and `{}` parses as a `concatenation` node.
-- **Escape hatches**: `find -delete/-exec*` and file-output actions, `xargs` whose operands include any write-capable command or shell (plus commands such as `file` whose meaning can be changed by appended operands), `rsync` output/temporary paths and remote destinations, command wrappers (`time`/`timeout`/`watch`/`stdbuf`/`ionice` unwrap their inner command; `timeout` consumes one DURATION token), bare shells executing stdin/pipe scripts (`curl | sh`, `bash < x`, `bash <<EOF` — note heredoc nodes attach as siblings of `command` under `redirected_statement`), scripts from outside the workspace or unresolvable (`python /tmp/x.py`, `bash /tmp/x.sh`, `source`/`.`, `python -`, `python $SCRIPT`), inline-code interpreters (`python -c`, `node -e/-p`, `ruby -e`, `perl -e`, `php -r`, any `osascript`), remote execution (`ssh`/`scp`/`sftp` with operands), and `awk` programs containing `system(`, output redirection, or command pipes.
-- **Interpreter options**: leading options are parsed with per-interpreter rules so consumed values cannot hide a later script path (`python -W ignore /tmp/x.py`, `bash -O extglob /tmp/x.sh`). Config paths such as shell `--rcfile`, and Ruby/Perl `-I` search directories, are checked separately. Node/Ruby preload options require an explicit workspace path; opaque module names and URL-like specifiers clear positive trust. Unknown or deliberately unmodeled options do the same. Inline code (`python -c`, `node -e/-p/--eval`, `ruby -e`, `perl -e`, `php -r`, any `osascript`) and interpreters that still have no script after option parsing (`python`, `bash -O extglob`) escalate. Recognized workspace files and Python `-m` modules stay allowed.
-- **Shell state mutation**: sensitive assignments are checked both as syntax nodes/wrapper arguments and for builtin mutation forms; currently `printf -v` escalates because it can replace `PATH` and affect later commands.
-- **cwd tracking**: `cd`/`pushd` update a conservative set of possible cwd values. Conditional lists, branches, loops, command substitutions, functions, and subshells retain alternate cwd states; a relative path must be safe from every possible cwd. Unresolvable cwd changes combined with a relative write escalate. External or unresolvable `env -C`/`--chdir` and `sudo -D`/`--chdir` fail closed.
-- **External-directory confidence**: the workspace pass also reports whether every command's external-path behavior has an explicit model. The external gate auto-approves only when the normal verdict is safe and this confidence bit is true; unknown tools and unmodeled script execution stay with the human.
-- **Positive Bash confidence**: the workspace pass independently reports whether every executable has a positive trust rule. Literal-but-unknown commands, untrusted executable paths such as `/tmp/ls`, unrecognized `git` subcommands, and arbitrary environment assignments clear this bit. The Bash gate never approves when it is false.
-- **Executable identity**: bare allowlisted command names and executable paths in `/bin`, `/sbin`, `/usr/bin`, or `/usr/sbin` may use the named rule. Bare names are not resolved against the ambient `PATH`; this provenance limitation is documented in README. Other path-qualified executables ask unless they resolve lexically inside the workspace, which is the documented workspace-script trust boundary.
-- **Workspace root**: `rm` and destructive/metadata-oriented writers (`chmod`, `chown`, `touch`, `rmdir`, `truncate`, `shred`, and `install -d`) cannot target the workspace root. Copy/content-producing commands may target `.` because they create entries beneath the root.
-- **Explicit exceptions**: workspace scripts/executables and the finite `TRUSTED_DEVELOPMENT_COMMANDS` list are trusted without inspecting their contents, hooks, or project configuration. Symlink targets are also not canonicalized. These limitations must remain visible in README.
-- Unresolvable operands on write commands (`rm $TARGET`) and un-literal command names escalate (fail-safe).
-- Wrappers (`sudo`/`env`/`nohup`/...), nested shells (`sh -c` payload re-analysis), `eval`, and `busybox` are unwrapped with the same machinery as the upstream analyzer.
+## 4. Target architecture
 
-The former `{ upstream: true }` escape hatch was removed because it disabled these invariants. Passing that legacy option is ignored.
+The parser, policy, and OpenCode integration should have separate responsibilities:
 
-### Failure modes
-
-- Analyzer throws / parser times out → treated as `unanalyzable` → left to the human (fail-safe). The upstream parser already converts budget exhaustion to `{ ok: false, reason: 'aborted' }` and internal bugs to a degraded `hasError` tree (`parse.ts`).
-- Reply race (human answered first) → `NotFoundError` → catch, ignore.
-- Handle `bash`, `external_directory`, and `edit`; ignore unrelated permission and event types.
-
----
-
-## 4. Repository layout
-
-```
-opencode-bash-sentinel/
-├── src/
-│   ├── parser/            # ported packages/tree-sitter-bash (copy from upstream)
-│   │   ├── lexer.ts
-│   │   ├── parser.ts
-│   │   ├── grammar.ts
-│   │   ├── node.ts
-│   │   ├── parse.ts
-│   │   ├── budget.ts
-│   │   └── index.ts
-│   ├── analyzer.ts        # ported dangerous-command-ask.ts (DI stripped, pure functions)
-│   ├── policy-engine.ts   # parse-once orchestration and policy composition
-│   ├── workspace-policy.ts # path/effect rules and possible-cwd analysis
-│   ├── plugin.ts          # OpenCode plugin entry (event hook + reply glue)
-│   └── index.ts           # exports the Plugin
-├── test/
-│   ├── analyzer.test.ts   # command → expected verdict tables
-│   ├── plugin.test.ts     # event/reply glue with mocked transports
-│   └── parser.test.ts     # optionally port upstream's vitest parser tests
-├── DEVELOPMENT.md         # this file
-├── NOTICE.md              # ported-file ↔ upstream-path mapping
-├── LICENSE                # MIT, with Moonshot attribution line
-├── README.md
-└── package.json
+```text
+OpenCode permission event
+        |
+        v
+parse Bash once
+        |
+        v
+supported-structure normalization
+        |
+        v
+operation profiles -> one of three situations
+        |
+        v
+situation-specific rules
+        |
+        +-- allow -> reply "once"
+        |
+        +-- ask   -> leave native dialog unanswered
 ```
 
-### package.json notes
+### 4.1 Parser
 
-- `name`: `opencode-bash-sentinel`, `type: module`, `exports` → `src/index.ts` (opencode loads TS plugins directly via Bun — keep **zero runtime dependencies**)
-- `engines.opencode`: semver range covering verified versions (the loader enforces it for npm installs; the HttpApi reply route is marked experimental upstream, so pin conservatively)
-- devDependencies: `@opencode-ai/plugin` (types), `vitest`; optionally `tree-sitter-bash` + `web-tree-sitter` (only for porting upstream's differential parser tests)
+Keep the existing pure-TypeScript Bash parser as a bounded syntax service. A parse error, timeout, or node-budget failure returns an unsupported decision. Parser size is not policy complexity and should remain isolated.
 
----
+### 4.2 Normalized command representation
 
-## 5. Implementation steps
+Normalize only the structures the policy deliberately supports:
 
-1. **Copy the parser** from `.reference/kimi-code/packages/tree-sitter-bash/src/*` into `src/parser/`. It compiles standalone; the only change is rewriting the `#/*` import alias to relative imports (`./budget`, `./grammar`, ...). Its parse result is `{ ok: true, rootNode, hasError } | { ok: false, reason: 'aborted' }`.
+- simple commands and ordinary compound lists;
+- redirects;
+- a small set of wrappers;
+- literal nested payloads where support is useful;
+- conservative cwd changes needed to resolve visible paths.
 
-2. **Refresh the analyzer** from `packages/agent-core-v2/src/agent/permissionPolicy/policies/dangerous-command-ask.ts`. Remove DI decorators and `IBashParserService`/config imports, then retain the local nested-shell and `sudo --chdir` hardening called out in the source header. Provide the parse function as `(source: string) => BashParseResult`, adapting `rootNode` → `root`.
+The normalized representation should carry explicit cwd, path, operation, and situation information instead of mutating several global confidence booleans. One Bash command may produce several independently classified operations.
 
-3. **Write the plugin entry** (`src/plugin.ts`):
+### 4.3 Operation profiles
 
-   ```ts
-   import type { Plugin } from "@opencode-ai/plugin"
-   import { analyzeCommandString } from "./analyzer"
+Profiles support the three situations without trying to merge their rules:
 
-   export const BashSentinelPlugin: Plugin = async ({ client, serverUrl }) => {
-     return {
-       event: async ({ event }) => {
-         if (event.type !== "permission.asked") return
-         const req = event.properties
-         if (req.permission !== "bash") return
-         const command = (req.metadata as any)?.command ?? (req.metadata as any)?.input?.command
-         if (typeof command !== "string") return
-         const verdict = analyzeCommandString(command)   // may throw → caught inside, returns unanalyzable
-         if (verdict !== undefined) return                // dangerous | unanalyzable → human decides
-         try {
-           await replyOnce(client, serverUrl, req)        // see §2.6/§2.7: raw POST + auth + fallbacks
-         } catch {
-           // already answered by the human via the native dialog — ignore
-         }
-       },
-     }
-   }
-   ```
+1. Filesystem profiles identify visible read/write/delete/source/destination paths, which are then classified as inside or outside.
+2. Workspace-neutral profiles recognize an exact set of informational or network forms with no workspace classification.
+3. Trust-boundary profiles implement narrow assumptions such as `npm run ...` and committed unchanged workspace scripts.
 
-   The `replyOnce` helper implements the transport order from §2.6: SDK `permission.reply` (future) → SDK `postSessionIdPermissionsPermissionId` (current 1.x, in-process fetch — required because `opencode run` has no HTTP listener) → raw fetch new route → raw fetch legacy route; Basic auth header from `OPENCODE_SERVER_PASSWORD`/`OPENCODE_SERVER_USERNAME` env when set. Note: directory file-plugins need a root `index.ts` next to `package.json` (the loader resolves directory specs to a root index, not `exports`).
+A profile either produces explicit operations or returns unsupported. It should not try to prove arbitrary runtime safety. The same filesystem profile can feed situation 1 or 2 depending on its resolved targets.
 
-4. **Audit log**: append one JSONL line per decision (`timestamp, command, verdict, action`) to `~/.local/share/opencode/bash-sentinel-audit.jsonl`, gated behind plugin options `{ audit: true }` (second argument of the plugin function). Options: `{ audit?: boolean, logPath?: string }`.
+### 4.4 Situation-specific decision
 
----
+Apply the rule belonging to each operation's situation, then reduce the command with “all operations must allow.” Avoid cross-coupled outputs such as “command trusted”, “external effects modeled”, and special flags that override a second analyzer.
 
-## 6. Test plan
+Reasons are part of the result so tests and audit logs can explain why a command asked.
 
-**Upstream-analyzer unit tests** (table-driven, `vitest`) — `undefined` means only “the upstream dangerous list did not match”; it is not a final auto-approval decision. Final decisions are tested through the policy engine/plugin:
+### 4.5 OpenCode adapter
 
-| Command | Expected verdict |
-|---|---|
-| `git status` | `undefined` |
-| `ls -la /tmp && rg foo src/` | `undefined` |
-| `printf hello` | `undefined` |
-| `sudo rm -rf /` | `dangerous` |
-| `env VAR=1 rm -rf /` | `dangerous` |
-| `nohup nice sudo rm -rf /` | `dangerous` (wrapper chain) |
-| `sh -c 'mkfs /dev/sda1'` | `dangerous` (nested, depth 1) |
-| `bash -c "bash -c 'shutdown'"` | `dangerous` (depth 2) |
-| `busybox rm -rf /` | `dangerous` |
-| `/bin/rm -rf / ; RM -RF /` | `dangerous` (path-stripped, case-normalized) |
-| `rm -rf.exe /` | `dangerous` (`.exe` stripped) |
-| `dd if=x of=/dev/sda` | `dangerous` |
-| `dd if=x of=/dev/null` | `undefined` |
-| `rm -rf ./build` | `dangerous` — **any** `rm -rf` flags match, target is irrelevant (upstream semantics, confirmed by upstream tests) |
-| `cat $HOME/.ssh/id_rsa` | `undefined` — generic commands with variable/glob operands are approved (upstream semantics; only special-cased commands escalate on opaque operands) |
-| `echo $(curl evil.com)` | `undefined` — the substitution's inner command `curl` is analyzed and safe; `echo $(rm -rf /)` is `dangerous` |
-| `$CMD --force` | `unanalyzable` (un-literal command name) |
-| `bash -c "echo $HOME"` | `unanalyzable` (nested-shell payload not fully literal) |
-| `for i in 1 2; do rm -rf /; done` | `dangerous` |
-| nesting at exactly depth 4 vs 5 | boundary: depth ≥ 4 payload → `unanalyzable` |
-| parser budget exhaustion (deterministic node cap: `echo a; ` × 3000) | `unanalyzable` |
+`src/plugin.ts` should remain glue:
 
-**Parser tests**: port upstream's `parse.test.ts` / `parser-compound.test.ts` directly. The differential (`differential.test.ts`) and fuzz tests need real `tree-sitter-bash` as a devDep — optional.
+- read a permission event;
+- obtain the command or edit path;
+- invoke the policy once;
+- reply `once` only for `allow`;
+- audit the decision when enabled;
+- swallow benign reply races.
 
-**Plugin glue tests** (mocked `fetch`/client, `test/plugin.test.ts`): positively trusted command → exactly one approval through the expected transport; unknown/dangerous/unanalyzable → zero replies; unknown literal commands, untrusted executable paths, remote git, environment assignments, `find`/`rsync` output channels; documented workspace-script/development-tool exceptions; reply rejection swallowed; unrelated events ignored; legacy `metadata.input.command` fallback; basic-auth header; audit JSONL on/off.
+It must not contain command semantics.
 
-**Integration test** — deterministic, no LLM account needed. This was the method actually used to verify opencode 1.18.29:
+## 5. Kimi provenance and divergence
 
-1. Run a tiny OpenAI-compatible mock model server (plain `node:http`, ~80 lines) that answers `CMD:<command>` user prompts with a `bash` tool call and everything else (title generation, tool-result follow-ups) with plain text.
-2. Test workspace `opencode.json`:
-   ```json
-   {
-     "plugin": ["/abs/path/to/opencode-bash-sentinel"],
-     "permission": { "bash": { "*": "ask" } },
-     "provider": {
-       "mockllm": {
-         "npm": "@ai-sdk/openai-compatible",
-         "options": { "baseURL": "http://127.0.0.1:8997/v1", "apiKey": "mock" },
-         "models": { "mock-1": { "name": "Mock" } }
-       }
-     }
-   }
-   ```
-3. `opencode run -m mockllm/mock-1 "CMD:git status"` — expect the command output, no permission prompt. Non-interactive `run` auto-rejects any permission request, so a dangerous/unanalyzable command must print `! permission requested: bash (...); auto-rejecting` — that line is the escalation signal.
-4. For `opencode serve` mode: `POST /session`, then `POST /session/{id}/message` with `{"model":{"providerID":"mockllm","modelID":"mock-1"},"agent":"build","parts":[{"type":"text","text":"CMD:..."}]}`, then read `/session/{id}/message` and assert the bash tool part reached `status: "completed"`.
+The parser and current `src/analyzer.ts` originated in Moonshot AI's Kimi Code CLI:
 
-Verified scenarios: `git status` / `ls *.md` / `git log --oneline` run silently (run + serve modes); `sudo rm -rf /private/tmp/x`, `mkfs.ext4 /dev/sda1`, `bash -c "echo $HOME"` escalate; audit JSONL records `approve`/`escalate` decisions; reply races are swallowed.
+| Upstream | Commit | Local use |
+|---|---|---|
+| Kimi Code | `f88ed6d45bcf5ea358c173af7a3568b57ba9bd38` | Bash parser; historical/current-transition analyzer |
+| OpenCode | `ecbc6ccac85b3e8087b6445e584318419b9e2b34` (`dev`) | Integration reference; e2e-tested with release 1.18.29 |
 
-Scenarios still worth adding: human answers the TUI dialog before the plugin (race, interactive only); server started with `OPENCODE_SERVER_PASSWORD` (auth header path); `--auto` mode (no interference).
+Sentinel's policy has diverged from Kimi. Kimi's dangerous-command policy is not a target-policy authority and should not be composed into the final decision model after migration. Catastrophic commands do not require a separate exhaustive blacklist: unless a command matches an allowable supported profile, it asks.
 
----
+The parser may continue to be refreshed from Kimi with attribution and compatibility review. Do not automatically reapply analyzer behavior or policy changes from upstream.
 
-## 7. License & attribution (mandatory)
+Ported paths:
 
-- This project's license: **MIT**.
-- The parser and analyzer are adapted from [MoonshotAI/kimi-code](https://github.com/MoonshotAI/kimi-code) (MIT). MIT requires preserving the copyright notice. In `LICENSE`, add:
+- `packages/tree-sitter-bash/src/` → `src/parser/`
+- `packages/agent-core-v2/src/agent/permissionPolicy/policies/dangerous-command-ask.ts` → current transitional `src/analyzer.ts`
 
-  ```
-  Portions Copyright (c) 2026 Moonshot AI, Inc.
-  (adapted from https://github.com/MoonshotAI/kimi-code — packages/tree-sitter-bash,
-  packages/agent-core-v2/src/agent/permissionPolicy/policies/dangerous-command-ask.ts)
-  ```
+MIT attribution in [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md) remains mandatory even if the analyzer is later removed.
 
-- `NOTICE.md` lists each ported file and its upstream path.
+## 6. Current implementation gap
 
----
+The present `src/workspace-policy.ts` combines:
 
-## 8. Out of scope / future work
+- executable allowlists;
+- external-effect confidence;
+- write-target extraction;
+- interpreter option grammars;
+- wrapper and cwd state;
+- command-specific escape detection;
+- workspace red lines.
 
-- Other permissions beyond `bash`, `edit`, and `external_directory` remain under opencode rules.
-- Kimi's other policies (git-cwd-write-approve, sensitive-file-access-ask) could be ported later the same way.
-- An optional "observe mode" (log what would be approved, approve nothing) for a burn-in period.
-- Expand positive command coverage conservatively. Each addition needs tests for command-specific write/exec options; an unknown command or uncertain effect must continue to ask.
-- Track upstream: watch for the `permission.ask` plugin hook being wired up (would allow a cleaner forward-mapping design) and for stabilization of the experimental HttpApi reply route.
+`src/policy-engine.ts` then composes that result with the Kimi analyzer and a special `rm -rf` override. This architecture reflects the superseded goal of positively classifying every executable and should be replaced rather than incrementally extended.
+
+Behavior known to differ from the target includes:
+
+- workspace scripts are currently trusted based on lexical location, without the `HEAD`/dirty check;
+- the current policy has a broad finite development-tool allowlist rather than only the newly agreed explicit exceptions;
+- Kimi dangerous verdicts still participate in final decisions;
+- current interpreter and command-option analysis is substantially broader than the intended supported subset;
+- current workspace-root restrictions include metadata operations beyond direct root destruction.
+
+This list is a migration guide, not an authorization to change code before the target documentation is approved.
+
+## 7. Verified OpenCode integration facts
+
+The following facts were verified against OpenCode commit `ecbc6ccac85b3e8087b6445e584318419b9e2b34`; re-verify them after an OpenCode upgrade.
+
+1. Permission evaluation is server-side. `deny` short-circuits, `allow` runs silently, and `ask` publishes `permission.asked`. The default when no rule matches is `ask`.
+2. The shell permission key is `bash`.
+3. Command text is at `event.properties.metadata.command`; retain the older `metadata.input.command` fallback.
+4. Plugins receive server events through the `event` hook.
+5. The typed `permission.ask` plugin hook is not invoked by the server, so Sentinel reacts to an already-created ask and replies programmatically.
+6. The reply transport order is: dedicated SDK route, legacy SDK route, then raw new/legacy routes through the SDK-configured fetch. The configured fetch is required for in-process `opencode run`.
+7. Basic authorization is needed when `OPENCODE_SERVER_PASSWORD` is set.
+8. Human/plugin reply races are benign; the losing reply gets a not-found error and should be ignored.
+9. `external_directory` is separate from `bash`; directory consent is not Bash consent.
+10. Session-scoped “always” approvals bypass later plugin analysis.
+11. npm plugin loading enforces `engines.opencode`; keep the supported range conservative.
+
+The recommended configuration routes Bash and edit requests through the approval flow:
+
+```json
+{
+  "permission": {
+    "bash": { "*": "ask" },
+    "edit": { "*": "ask" }
+  }
+}
+```
+
+## 8. Migration plan
+
+1. Approve this product contract and resolve any remaining scope ambiguity.
+2. Add target-policy tests before deleting old behavior.
+3. Introduce an explicit operation/situation model and a small profile registry.
+4. Implement situation 1: the two red lines, ordinary workspace paths, and Git-backed workspace-script classification.
+5. Implement situation 2: the finite external-read profiles and external-write escalation.
+6. Implement situation 3: informational profiles, a narrow network profile set, and unsupported/indeterminate fallback.
+7. Add the explicit `npm run ...` trusted workflow.
+8. Implement per-operation composition and switch the plugin to the new decision path.
+9. Remove Kimi analyzer composition and obsolete confidence flags.
+10. Delete superseded tests and update README status only after runtime behavior matches.
+
+Avoid preserving old edge-case behavior merely because a regression test exists. Tests derived from the superseded policy should be deliberately reviewed against this contract.
+
+## 9. Test strategy
+
+Tests should be organized around the three situations and their composition, not an ever-growing exploit catalogue.
+
+Required groups:
+
+- workspace subpath reads, writes, moves, and deletion → allow;
+- direct workspace-root deletion/removal/move-away → ask;
+- direct filesystem writes to `.git` → ask;
+- supported local Git operations → allow;
+- finite external reads → allow;
+- external writes → ask;
+- recognized system-information profiles with no workspace relationship → allow;
+- narrowly approved network forms → allow;
+- uploads, remote mutation/execution, dynamic network requests, and unsupported network options → ask;
+- unknown commands and unsupported or indeterminate forms → ask;
+- parser failure/budget exhaustion → ask;
+- operations from different situations compose, and every operation must allow;
+- tracked and clean workspace entry scripts → allow;
+- staged, unstaged, untracked, external, dynamic, and ambiguous scripts → ask;
+- committed scripts with explicit external or dynamic path arguments → ask;
+- committed-script dependencies are not recursively inspected;
+- `npm run ...` → allow even with modified npm configuration, documenting the exception;
+- OpenCode transport, auth, event filtering, audit, and reply-race behavior.
+
+Use audit data to find the most frequent remaining prompts. Add a profile only when its semantics can stay small and its prompt reduction is worthwhile.
+
+## 10. Known limitations and out of scope
+
+- Filesystem-canonical symlink containment.
+- Runtime enforcement of workspace boundaries or red lines.
+- Recursive script dependency analysis.
+- Package-hook and trusted-workflow inspection.
+- Ambient `PATH` executable provenance.
+- Complete option grammars for external tools.
+- Arbitrarily nested or dynamic Bash.
+- Network/data-exfiltration control.
+- PowerShell and Windows `cmd` analysis.
+- Permissions other than `bash`, `external_directory`, and `edit`.
+
+These should remain limitations unless the product goal is explicitly changed. They are not an open-ended backlog of analyzer bugs.
+
+## 11. License
+
+This project is MIT licensed. The Kimi-derived parser and analyzer code require preserved attribution:
+
+```text
+Portions Copyright (c) 2026 Moonshot AI, Inc.
+(adapted from https://github.com/MoonshotAI/kimi-code)
+```
