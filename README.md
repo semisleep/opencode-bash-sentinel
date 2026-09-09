@@ -23,11 +23,13 @@ A harmless command may still require approval when it falls outside the supporte
 
 ## Target policy
 
-"Workspace" means the project worktree supplied by OpenCode. Sentinel classifies each recognizable operation into one of three situations. Each situation has a different rule; network activity is not treated as a workspace path.
+"Workspace" means the project worktree supplied by OpenCode. Sentinel parses Bash into command and redirect decision units, then classifies each unit into one of three situations. Each situation has a different rule; network activity is not treated as a workspace path.
+
+Classification is intentionally finite. Only commands with a supported path recognizer can enter the first two situations. An unknown command does not become a workspace command merely because one argument looks like `./file`; unsupported command shapes go directly to the third situation.
 
 ### 1. Clearly inside the workspace
 
-This situation applies when Sentinel recognizes an operation and every relevant filesystem target resolves inside the workspace, or when an explicit workspace trust rule applies.
+This situation applies when a supported path recognizer understands the complete command shape and every relevant filesystem target resolves inside the workspace. Relative paths are resolved from the OpenCode-provided cwd, but cwd alone never makes a path-free command a workspace command.
 
 There are three red lines:
 
@@ -50,7 +52,7 @@ Direct root destruction and direct `.git` writes require user approval:
 
 ~~~bash
 rm -rf .
-mv /path/to/workspace /tmp/old-workspace
+rmdir /path/to/workspace
 echo broken > .git/config
 ~~~
 
@@ -58,7 +60,7 @@ The red lines protect only effects visible in command syntax. They cannot constr
 
 #### Third red line: workspace scripts
 
-A directly invoked workspace script belongs to this first situation only when all of these checks succeed:
+A supported direct script invocation is classified from its entry-script path. When that entry path resolves inside the workspace, the invocation is in this first situation and is automatically approved only when all of these red-line checks succeed:
 
 1. Its entry path resolves lexically inside the workspace.
 2. The file exists in the current `HEAD` and is tracked by Git.
@@ -75,13 +77,13 @@ node scripts/build.js
 source scripts/env.sh
 ~~~
 
-Untracked or modified scripts, external scripts, inline code, stdin/heredoc programs, dynamic script paths, and scripts with visibly external or ambiguous path arguments hit the third red line. Sentinel leaves them for user approval unless another exact rule applies.
+An untracked or modified workspace script, ambiguous Git state, or a visibly external or ambiguous argument therefore requires user approval under this red line. No situation-3 profile overrides it. An external entry script is instead situation 2; inline code, stdin/heredoc programs, and dynamic entry paths are situation 3. Those forms also require user approval under the initial profiles, but they do not become workspace-script red-line cases.
 
 Only the entry script and visible command line are checked. Imported modules, sourced dependencies, configuration files, generated files, and runtime behavior are not recursively inspected. “Committed and unchanged” is a trusted repository baseline, not proof that the script stays inside the workspace.
 
 ### 2. Clearly outside the workspace
 
-This situation applies when Sentinel recognizes a filesystem operation and at least one relevant target resolves outside the workspace. A mixture of inside and outside targets is treated as outside.
+This situation applies when a supported path recognizer understands the complete command shape and at least one relevant target resolves outside the workspace. A mixture of inside and outside targets is treated as outside; Sentinel does not need to split sources and destinations to find additional safe cases.
 
 A finite set of common, simple read-only forms is approved:
 
@@ -89,7 +91,6 @@ A finite set of common, simple read-only forms is approved:
 cat /etc/hosts
 ls -la /tmp
 rg pattern /usr/include
-git -C /another/repository log -1
 ~~~
 
 Recognized external writes require user approval:
@@ -98,7 +99,6 @@ Recognized external writes require user approval:
 echo x > /tmp/out
 rm ~/.zshrc
 sed -i 's/a/b/' /etc/hosts
-git -C /another/repository checkout main
 ~~~
 
 The external-read set is intentionally finite. Unsupported options, embedded execution such as `find -exec`, and commands whose effects are unclear remain with the user instead of growing into a complete command-language analyzer.
@@ -110,15 +110,22 @@ This situation covers both:
 - operations that naturally have no filesystem workspace, such as system-information and network commands;
 - operations whose relationship to the workspace cannot be determined because the command, syntax, or relevant target is unknown or dynamic.
 
-Only exact, explicitly reviewed command-and-option profiles are approved here. Everything else is left to OpenCode's native user-approval dialog. Typical informational profiles may include:
+Only exact, explicitly reviewed command-and-option profiles are approved here. Everything else is left to OpenCode's native user-approval dialog. The initial informational set covers ordinary forms of the following commands, plus plain stdout-only `echo` and `printf` forms:
 
 ~~~bash
 date
 uname -a
 uptime
+whoami
+id
+free -h
+vm_stat
+nproc
+lscpu
+ps aux
 ~~~
 
-Network access belongs here, not in “outside the workspace.” A narrowly reviewed download-to-stdout form may be approved:
+Network access belongs here, not in “outside the workspace.” The initial network profile is a literal HTTP(S) `curl` GET or HEAD request whose response goes to stdout. It accepts only `-f/--fail`, `-s/--silent`, `-S/--show-error`, `-L/--location`, `-I/--head`, `--compressed`, and numeric connect-timeout, maximum-time, retry, and retry-delay options:
 
 ~~~bash
 curl -fsSL https://example.com/data
@@ -132,29 +139,45 @@ curl --upload-file secret.txt https://example.com/
 ssh host command
 ~~~
 
-An approved download form is a product trust decision, not proof that an HTTP request has no remote side effect or data exposure.
+An approved download form is a product trust decision, not proof that an HTTP request has no remote side effect or data exposure. Curl's ambient configuration and proxy environment are not inspected.
 
 Parser failure, resource-budget exhaustion, dynamic command names, unresolved relevant paths, and unsupported command structures also land in this third situation and require user approval.
 
 #### Explicit development-workflow exceptions
 
-A small set of conventional development workflows may be approved in the third situation. This is not a command-name allowlist: the invoked subcommand must be part of the reviewed profile, and the workflow's control files must exist in `HEAD` with no staged or unstaged changes.
+A small set of conventional development workflows is approved in the third situation only when the rules below match. This is not a command-name allowlist: the invoked subcommand must be part of the reviewed profile, and the workflow's control files must exist in `HEAD` with no staged or unstaged changes.
 
 The initial target set is:
 
 - Node package scripts: `npm run ...`, `npm test`, `pnpm run ...`, `yarn run ...`, and `bun run ...`; require an unchanged `package.json`.
-- Go: conventional `go build`, `go test`, `go vet`, `go fmt`, and selected `go mod` workflows; require unchanged `go.mod` and, when present, `go.sum`.
+- Go: `go build`, `go test`, `go vet`, `go fmt`, `go mod download`, and `go mod tidy`; require unchanged `go.mod` and, when present, `go.sum`.
 - Python packaging: read-only `pip list/show/check/freeze`, plus `pip install -r FILE` or `pip install .` only when the referenced requirements or project metadata files are committed and unchanged. The same rules apply to `python -m pip`.
 - Rust: conventional `cargo build/test/check/fmt/clippy`; require unchanged `Cargo.toml` and, when present, `Cargo.lock`.
 - Make: conventional `make TARGET`; require the selected `Makefile` or `GNUmakefile` to be committed and unchanged.
 
-These checks trust the committed workflow definition; they do not inspect transitive commands, hooks, source code executed by tests, runtime filesystem effects, or network activity. If a required control file is missing, untracked, modified, or ambiguous, Sentinel leaves the command for user approval.
+These checks trust only the direct entry control file selected by the command. They do not recursively inspect workspace configuration, included Makefiles or requirements, build scripts, transitive commands, hooks, source code executed by tests, runtime filesystem effects, or network activity. If a required control file is missing, untracked, modified, or ambiguous, Sentinel leaves the command for user approval.
 
 Additional ecosystems and subcommands should be added only as explicit, documented decisions driven by real prompt frequency.
 
-### Commands containing more than one operation
+#### Git profiles
 
-Each recognizable operation is classified separately. The complete Bash command is approved only when every operation passes the rule for its situation.
+All Git invocations belong to the third situation, including path-free commands executed from the OpenCode cwd. The initial profile approves `status`, `diff`, `log`, `show`, `blame`, `rev-parse`, `ls-files`, `grep`, `add`, `commit`, and `fetch` in their supported ordinary forms.
+
+`git -C DIR` remains in the third situation, but `DIR` is a profile constraint: an external directory permits only the read-only subset, while a dynamic or unresolved directory requires user approval. `--git-dir`, `--work-tree`, unknown global options, `push`, `pull`, `reset`, `clean`, `checkout`, `switch`, `restore`, credential/configuration mutation, and other unlisted subcommands require user approval.
+
+Git hooks, configuration, aliases, filters, and the actual repository selected by ambient process state are not recursively inspected.
+
+#### Environment assignments
+
+Leading Bash assignments are allowed as ordinary syntax and do not become wrappers; Sentinel ignores them while continuing to classify the associated command. Standalone assignment and recognized assignment forms of `export`, `declare`, `typeset`, and `readonly` are also allowed. Both rules have one exception: assignments to this short high-risk name set require user approval:
+
+`PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_*`, `BASH_ENV`, `ENV`, `ZDOTDIR`, `GIT_DIR`, `GIT_WORK_TREE`, `HOME`, `CDPATH`, `NODE_OPTIONS`, `PYTHONPATH`, `PYTHONSTARTUP`, `RUBYOPT`, `RUBYLIB`, and `PERL5OPT`.
+
+Assigning one of these names requires user approval because it can change executable identity, load code, or redirect path resolution. Tool-specific variables outside this short list are not modeled. The `env ... COMMAND` executable is a wrapper, not Bash assignment syntax, and is unsupported initially.
+
+### Commands containing more than one decision unit
+
+Only commands and redirects represented as real nodes in the Bash AST become separate decision units. The complete Bash command is approved only when every unit passes the rule for its situation.
 
 For example:
 
@@ -162,9 +185,11 @@ For example:
 curl -fsSL https://example.com/data > result.json
 ~~~
 
-The network request is a third-situation profile and the redirect is a first-situation workspace write. If both profiles are approved, the complete command is approved. Changing the redirect to `/tmp/result.json` creates a second-situation external write, so the complete command requires user approval.
+The curl invocation is a third-situation profile and the redirect is a first-situation workspace write. If both units are approved, the complete command is approved. Changing the redirect to `/tmp/result.json` creates a second-situation external write, so the complete command requires user approval.
 
-Nested commands and wrappers are analyzed only where the implementation has a small, explicit rule. There is no requirement to support arbitrary composition.
+Wrapper arguments and embedded command strings are not reinterpreted as commands. `sudo`, `env ... COMMAND`, `timeout`, `watch`, `nohup`, `nice`, `stdbuf`, `xargs`, `sh -c`, `bash -c`, and `eval` therefore enter the third situation and require user approval in the initial policy. This avoids recursive wrapper grammars and arbitrary nested analysis.
+
+Literal `cd DIR` followed by a simple command may update the cwd used to resolve that next command. Dynamic cwd changes, branching cwd state, or more complex control flow are unsupported and require user approval.
 
 ## Trust boundary and known limitations
 
@@ -177,11 +202,22 @@ Sentinel is a permission heuristic. It analyzes submitted command text and Git s
 - Bare command names are not resolved to prove which executable the ambient `PATH` will launch.
 - Path comparison is literal and case-sensitive; case-insensitive filesystem behavior is not modeled.
 - Approved network profiles are explicit trust decisions, not proof of remote read-only behavior.
+- Curl configuration, proxies, and other ambient network settings are not inspected.
+- Environment variables outside the short high-risk name set may still alter tool-specific behavior.
 - Network access and data exfiltration are not sandboxed.
 - Audit logs contain complete command text and may contain credentials or tokens.
 - `pwsh` and `cmd` are outside the Bash-only scope.
 
 Use OS- or container-level sandboxing when these boundaries are insufficient.
+
+## File-edit permission
+
+The OpenCode `edit` permission uses a separate, simple path rule:
+
+- an edit to an ordinary path inside the workspace is automatically approved;
+- an edit to `.git`, outside the workspace, or to an unresolved path requires user approval.
+
+Editing a workspace script is allowed. The third red line applies when that now-modified script is later executed, not when it is edited.
 
 ## OpenCode behavior
 

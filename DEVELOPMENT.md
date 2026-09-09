@@ -33,7 +33,7 @@ Sentinel is not:
 
 ### 3.1 Three situations
 
-Classification starts with an operation's relationship to the filesystem workspace:
+The parser first produces decision units for executable command nodes and explicit redirects. Each unit is then classified by its relationship to the filesystem workspace:
 
 ```ts
 type Situation =
@@ -42,20 +42,24 @@ type Situation =
   | "workspace-neutral-or-indeterminate"
 ```
 
-1. **Clearly inside the workspace:** apply the three red lines, then allow every other recognized workspace operation.
+1. **Clearly inside the workspace:** apply the three red lines, then allow every other recognized workspace command.
 2. **Clearly outside the workspace:** allow only finite recognized read-only forms; ask for writes and unsupported forms.
 3. **No workspace relationship, or indeterminate:** allow only exact reviewed command-and-option profiles; ask for everything else.
 
-“Indeterminate” is not the same as a parser failure. The analyzer may understand that `curl` performs network access while correctly deciding that a network request has no filesystem workspace classification. It may also parse a dynamic filesystem command but be unable to resolve its target. Both use the third situation, but should retain different audit reasons.
+Only a finite path recognizer may place a command in situation 1 or 2. A recognizer matches a supported executable and complete invocation shape, identifies its relevant path operands, and stops at the first unsupported option or construct. Unknown commands and unsupported forms go directly to situation 3 even when an argument resembles a path.
+
+“Indeterminate” is not the same as a parser failure. The analyzer may understand that `curl` performs network access while correctly deciding that it has no filesystem workspace classification. It may also parse a dynamic filesystem command but be unable to resolve its target. Both use situation 3, but retain different audit reasons.
 
 ### 3.2 Situation 1: clearly inside the workspace
 
-Starting a process with the workspace as its cwd does not prove that it stays inside the workspace. A command counts as a workspace non-red-line operation only when:
+Starting a process with the workspace as its cwd does not prove that it stays inside the workspace. A command enters situation 1 only when:
 
-- a supported command profile identifies its relevant visible targets as workspace paths; or
-- an explicit trust-boundary rule classifies it as a trusted workflow.
+- a finite path recognizer accepts the complete invocation shape; and
+- every path that recognizer considers relevant resolves inside the workspace.
 
-The term explicitly excludes the three red lines below. Classification checks them first; only remaining workspace-contained operations are allowed.
+Relative explicit paths are resolved from the OpenCode-provided cwd. A path-free command is not inferred to be a workspace command merely because that cwd is the workspace.
+
+After classification, the three red lines below are checked; every remaining situation-1 command is allowed without another allow profile.
 
 The implementation analyzes command text, not runtime behavior. All guarantees are therefore limited to recognized syntax and visible effects.
 
@@ -73,7 +77,7 @@ Matching a red line produces an `ask` decision: Sentinel sends no approval reply
 
 #### Workspace script trust rule
 
-A workspace script avoids the third red line and may be treated as belonging to situation 1 only when:
+A supported direct script invocation is classified from its entry-script path. An entry path that resolves inside the workspace places the invocation in situation 1; it avoids the third red line only when:
 
 1. its entry path is literal and resolves lexically inside the workspace;
 2. the path is present in the current `HEAD`;
@@ -91,7 +95,7 @@ node scripts/build.js
 source scripts/env.sh
 ```
 
-Untracked, modified, external, ignored, generated, or unresolved scripts do not qualify. Neither do dynamic script paths, inline/stdin/heredoc programs, ambiguous Git/submodule state, explicit external argument paths, or unresolved dynamic path expressions.
+Untracked, modified, ignored, or generated workspace scripts do not qualify. Neither do ambiguous Git/submodule state, explicit external argument paths, or unresolved dynamic path expressions. An external entry script is situation 2. An unresolved or dynamic entry path and inline/stdin/heredoc program are situation 3. The initial profiles ask for all of those non-workspace forms independently of the workspace red line.
 
 Argument screening is syntactic. Absolute paths, `~` paths, and relative paths with explicit path syntax are classified; ordinary bare values are not assumed to be paths. Only the entry script is compared with `HEAD`. Imported modules, sourced dependencies, configuration, generated inputs, and runtime behavior are not recursively checked.
 
@@ -99,13 +103,13 @@ Argument screening is syntactic. Absolute paths, `~` paths, and relative paths w
 
 ### 3.3 Situation 2: clearly outside the workspace
 
-Recognized writes outside the workspace ask. Recognized reads outside the workspace may be allowed.
+Recognized writes outside the workspace always ask. A recognized read is allowed only when its complete invocation matches one of the finite external-read profiles; every other situation-2 command asks.
 
 External-read support is a finite set of common command profiles. Each profile should accept only simple, well-understood forms. Options that add execution or output behavior—such as preprocessors, `find -exec`, file-producing modes, or an unknown option with relevant semantics—cause `unsupported-or-unknown`.
 
 There is no requirement to support every read-only utility or every safe option. An unrecognized but harmless read asks.
 
-If one operation has both workspace and external filesystem targets, classify it as situation 2.
+If one recognized command has both workspace and external filesystem targets, classify the whole command unit as situation 2. Do not split sources and destinations merely to recover additional allow cases: for example, both `cp /tmp/input .` and `mv /tmp/input .` may conservatively require user approval when no exact situation-2 profile accepts them.
 
 ### 3.4 Situation 3: no workspace relationship, or indeterminate
 
@@ -114,43 +118,85 @@ This situation contains two subtypes:
 - **workspace-neutral:** the recognized operation has no meaningful filesystem target, such as system information or network access;
 - **indeterminate:** a filesystem relationship may exist, but relevant syntax, commands, or targets cannot be classified.
 
-Only exact, explicitly reviewed command-and-option profiles are allowed. Examples may include informational commands such as `date`, `uname -a`, and `uptime`.
+Only exact, explicitly reviewed command-and-option profiles are allowed. The initial informational family covers bounded ordinary forms of `date`, `uname`, `uptime`, `whoami`, `id`, `free`, `vm_stat`, `nproc`, `lscpu`, and `ps`, plus plain stdout-only `echo` and `printf` forms. Each implementation profile must enumerate accepted flags; an unknown flag returns unsupported. In particular, the `printf` profile must reject assignment forms such as `printf -v`.
 
-Network commands belong here, not in situation 2. A network profile must be narrow—for example a simple literal HTTP(S) download to stdout with a reviewed set of `curl` flags. Upload, explicit remote mutation, remote execution, credential-bearing or dynamic requests, file-producing options, and unknown options ask. Even an approved download profile is a trust decision, not proof that the remote request is side-effect-free.
+Network commands belong here, not in situation 2. The initial network family contains `curl` only:
+
+- one literal `http://` or `https://` URL;
+- default GET or `-I/--head`;
+- stdout output only;
+- combinable `-f/--fail`, `-s/--silent`, `-S/--show-error`, `-L/--location`, `--compressed`, and numeric `--connect-timeout`, `--max-time`, `--retry`, and `--retry-delay`.
+
+Upload, explicit remote mutation, remote execution, credential/cookie/header/body options, dynamic URLs, curl file-output options, non-HTTP(S) schemes, multiple URLs, and unknown options ask. Bash redirects remain separate decision units. Curl's `.curlrc`, proxy environment, DNS, and other ambient state are not inspected; this is an explicit trust boundary.
 
 Parser failure, parser-budget exhaustion, dynamic command names, unresolved relevant targets, unsupported wrappers, and structures beyond the supported subset are indeterminate and ask.
 
 The intended response to a difficult edge case is usually “unsupported”, not another layer of semantic emulation.
 
+#### Git profiles
+
+Every Git invocation belongs to situation 3, even when it has path operands or starts from the OpenCode workspace. This deliberately avoids inferring repository scope from ambient cwd.
+
+The initial ordinary-form allow set is `status`, `diff`, `log`, `show`, `blame`, `rev-parse`, `ls-files`, `grep`, `add`, `commit`, and `fetch`. Each subcommand profile accepts only an enumerated flag/operand shape.
+
+`git -C DIR` remains situation 3 but adds a constraint. A literal workspace directory may use the normal set; a literal external directory may use only `status`, `diff`, `log`, `show`, `blame`, `rev-parse`, `ls-files`, and `grep`. Dynamic `-C`, `--git-dir`, `--work-tree`, and unknown global options ask.
+
+`push`, `pull`, `reset`, `clean`, `checkout`, `switch`, `restore`, credential/configuration mutation, and every unlisted subcommand ask in the initial policy. Git hooks, aliases, filters, configuration, and repository selection affected by ambient state are not recursively inspected.
+
+#### Environment assignments
+
+Leading Bash `NAME=value` assignments are allowed and ignored while classifying the associated executable. Standalone assignments and recognized assignment forms of `export`, `declare`, `typeset`, and `readonly` are also allowed. Both rules exclude this fixed high-risk name set:
+
+`PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, names beginning with `DYLD_`, `BASH_ENV`, `ENV`, `ZDOTDIR`, `GIT_DIR`, `GIT_WORK_TREE`, `HOME`, `CDPATH`, `NODE_OPTIONS`, `PYTHONPATH`, `PYTHONSTARTUP`, `RUBYOPT`, `RUBYLIB`, and `PERL5OPT`.
+
+Apply the set to direct assignments and recognized `export`, `declare`, `typeset`, and `readonly` assignment forms. Assigning a high-risk name asks because it can change executable identity, preload code, or redirect path/repository resolution. Tool-specific environment variables outside this short set are deliberately not modeled. Command substitutions inside an assignment remain real AST command units and must independently allow.
+
+The `env ... COMMAND` executable is not assignment syntax. It is an unsupported wrapper in the initial policy.
+
 #### Development-workflow exceptions
 
-A finite set of conventional development workflows may be allowed. A workflow qualifies only when:
+A finite set of conventional development workflows is allowed only when:
 
 1. its command and subcommand match a reviewed profile;
 2. every required control file exists in `HEAD`;
 3. none of those files has a staged or unstaged change;
 4. every visible path option covered by the profile satisfies that profile's path rule.
 
+“Required control file” means only the profile's direct entry file in the effective workspace directory. Do not recursively discover workspace configuration, included Makefiles or requirements, build scripts, hooks, or transitive metadata. Alternate workspace/root selectors that the profile does not explicitly support ask.
+
 Initial target profiles:
 
-- **Node scripts:** `npm run ...`, `npm test`, `pnpm run ...`, `yarn run ...`, and `bun run ...`. Require `package.json` to be committed and unchanged.
+- **Node scripts:** `npm run ...`, `npm test`, `pnpm run ...`, `yarn run ...`, and `bun run ...`. Require the effective workspace's `package.json` to be committed and unchanged. Alternate prefix/workspace selectors ask initially.
 - **Go:** `go build`, `go test`, `go vet`, `go fmt`, `go mod download`, and `go mod tidy`. Require `go.mod` and, when present, `go.sum` to be committed and unchanged. Explicit output or directory paths are still classified normally.
 - **Python/pip information:** `pip list`, `pip show`, `pip check`, and `pip freeze`, including `python -m pip` equivalents. These exact informational profiles need no project control file.
 - **Python/pip installation:** `pip install -r FILE` requires that requirements file to be committed and unchanged. `pip install .` requires every present packaging control file among `pyproject.toml`, `setup.cfg`, and `setup.py` to be committed and unchanged, with at least one present in `HEAD`. The same rules apply to `python -m pip`.
 - **Rust:** `cargo build`, `cargo test`, `cargo check`, `cargo fmt`, and `cargo clippy`. Require `Cargo.toml` and, when present, `Cargo.lock` to be committed and unchanged.
-- **Make:** `make` with conventional targets. Require the selected makefile—an explicit `-f/--file` target or the applicable `GNUmakefile`/`Makefile`—to be committed and unchanged.
+- **Make:** `make` with zero or more literal, non-assignment targets and optional numeric `-j/--jobs`. Require the selected makefile—an explicit literal in-workspace `-f/--file` target or the applicable `GNUmakefile`/`Makefile`—to be committed and unchanged. Other options ask initially.
 
 These profiles trust only the committed workflow definition. They do not recursively inspect lifecycle hooks, transitive commands, modified source code executed by tests or generators, runtime filesystem effects, or network behavior. Those opaque effects may bypass external-write checks and the syntax-level red lines.
 
 A missing, untracked, modified, or ambiguous required control file produces `ask`. Do not silently broaden this set to an executable's other subcommands. Additional workflows require an explicit product decision, documentation, and tests.
 
-### 3.5 Commands containing multiple operations
+### 3.5 Commands containing multiple decision units
 
-A command may contain operations from multiple situations. Classify each one separately and allow the complete Bash command only when every operation is allowed by the rule for its own situation.
+A Bash source may contain command nodes and redirects from multiple situations. Classify each decision unit separately and allow the complete source only when every unit is allowed by the rule for its own situation.
 
-For `curl -fsSL URL > result.json`, the network request uses a situation-3 profile and the redirect is a situation-1 workspace write. Changing the target to `/tmp/result.json` creates a situation-2 external write, so the complete command asks.
+For `curl -fsSL URL > result.json`, the curl command uses a situation-3 profile and the redirect is a situation-1 workspace write. Changing the target to `/tmp/result.json` creates a situation-2 external write, so the complete source asks.
 
-Unsupported nesting or control flow asks; coverage is intentionally bounded.
+Only nodes already represented as executable commands or redirects by the Bash AST become decision units. Do not reinterpret wrapper arguments, `sh -c` strings, `eval` text, `xargs` operands, or `find -exec` operands as nested commands.
+
+The initial policy has no allow profile for `sudo`, `doas`, `env ... COMMAND`, `timeout`, `watch`, `nohup`, `nice`, `stdbuf`, `xargs`, `sh -c`, other shell `-c` forms, or `eval`. They enter situation 3 and ask as whole invocations. A future high-frequency wrapper may receive one exact invocation profile, but must not introduce a generic recursive unwrapping engine.
+
+Support at most one simple cwd transition: literal `cd DIR` followed by a simple sequential command may change the cwd used for that command's explicit relative paths. Dynamic cwd changes, branching/alternate cwd states, or more complex control flow ask. Do not reason about whether `&&`, `||`, conditions, or loops execute at runtime; every syntactically present decision unit must allow.
+
+### 3.6 File-edit permission
+
+The `edit` gate does not use Bash command profiles:
+
+- a resolved ordinary path inside the workspace allows;
+- a `.git` path, external path, or unresolved path asks.
+
+Editing a script is allowed. The third workspace red line is evaluated only if that modified script is later executed.
 
 ## 4. Target architecture
 
@@ -166,7 +212,7 @@ parse Bash once
 supported-structure normalization
         |
         v
-operation profiles -> one of three situations
+finite recognizers -> decision units -> situations
         |
         v
 situation-specific rules
@@ -186,25 +232,27 @@ Normalize only the structures the policy deliberately supports:
 
 - simple commands and ordinary compound lists;
 - redirects;
-- a small set of wrappers;
-- literal nested payloads where support is useful;
-- conservative cwd changes needed to resolve visible paths.
+- leading Bash assignments;
+- one literal, simple cwd transition where useful.
 
-The normalized representation should carry explicit cwd, path, operation, and situation information instead of mutating several global confidence booleans. One Bash command may produce several independently classified operations.
+Do not normalize wrapper arguments or embedded strings into commands. Unsupported wrappers, nested payloads, dynamic cwd, and complex control flow produce situation-3 ask decisions.
+
+The normalized representation should carry explicit cwd, path, invocation, redirect, and situation information instead of mutating several global confidence booleans. One Bash source may produce several independently classified decision units.
 
 ### 4.3 Operation profiles
 
-Profiles support the three situations without trying to merge their rules:
+Finite recognizers and profiles support the three situations without trying to merge their rules:
 
-1. Filesystem profiles identify visible read/write/delete/source/destination paths, which are then classified as inside or outside.
-2. Workspace-neutral profiles recognize an exact set of informational or network forms with no workspace classification.
-3. Trust-boundary profiles implement the third workspace red line and the finite development workflows whose control files are committed and unchanged.
+1. Path recognizers accept complete, simple invocation shapes and extract the relevant paths used to choose situation 1 or 2.
+2. Situation-3 allow profiles recognize exact informational, network, Git, and development-workflow forms.
+3. The workspace-script checker implements the third red line with a shared Git-clean-file predicate.
+4. A generic redirect recognizer creates a separate path decision unit.
 
-A profile either produces explicit operations or returns unsupported. It should not try to prove arbitrary runtime safety. The same filesystem profile can feed situation 1 or 2 depending on its resolved targets.
+A recognizer either accepts the whole supported shape or returns unsupported; partial recognition must not produce an allow. It should not try to prove arbitrary runtime safety. The same path recognizer can feed situation 1 or 2 depending on its resolved targets.
 
 ### 4.4 Situation-specific decision
 
-Apply the rule belonging to each operation's situation, then reduce the command with “all operations must allow.” Avoid cross-coupled outputs such as “command trusted”, “external effects modeled”, and special flags that override a second analyzer.
+Apply the rule belonging to each decision unit's situation, then reduce the complete source with “all units must allow.” Avoid cross-coupled outputs such as “command trusted”, “external effects modeled”, and special flags that override a second analyzer.
 
 Reasons are part of the result so tests and audit logs can explain why a command asked.
 
@@ -261,6 +309,9 @@ Behavior known to differ from the target includes:
 - the current policy has a broad finite development-tool allowlist rather than only the newly agreed explicit exceptions;
 - Kimi dangerous verdicts still participate in final decisions;
 - current interpreter and command-option analysis is substantially broader than the intended supported subset;
+- current wrappers and embedded shell payloads are recursively analyzed, while the target policy treats them as unsupported whole invocations;
+- current environment-assignment behavior does not match the target short high-risk-name exception;
+- Git is currently partly classified through workspace paths instead of exclusively through situation-3 profiles;
 - current workspace-root restrictions include metadata operations beyond direct root destruction.
 
 This list is a migration guide, not an authorization to change code before the target documentation is approved.
@@ -296,12 +347,12 @@ The recommended configuration routes Bash and edit requests through the approval
 
 1. Approve this product contract and resolve any remaining scope ambiguity.
 2. Add target-policy tests before deleting old behavior.
-3. Introduce an explicit operation/situation model and a small profile registry.
-4. Implement situation 1: the three red lines, ordinary workspace paths, and Git-backed workspace-script classification.
+3. Introduce an explicit decision-unit/situation model and small finite recognizer registries.
+4. Implement situation 1: finite path recognizers, the three red lines, and Git-backed workspace-script classification.
 5. Implement situation 2: the finite external-read profiles and external-write escalation.
-6. Implement situation 3: informational profiles, a narrow network profile set, and unsupported/indeterminate fallback.
+6. Implement situation 3: informational, curl, Git, and unsupported/indeterminate profiles.
 7. Add the finite Node, Go, pip, Cargo, and Make workflow profiles with Git-clean control-file checks.
-8. Implement per-operation composition and switch the plugin to the new decision path.
+8. Add Bash-assignment handling, the high-risk variable-name set, redirect units, bounded literal `cd`, and all-units composition.
 9. Remove Kimi analyzer composition and obsolete confidence flags.
 10. Delete superseded tests and update README status only after runtime behavior matches.
 
@@ -316,15 +367,20 @@ Required groups:
 - workspace subpath reads, writes, moves, and deletion → allow;
 - direct workspace-root deletion/removal/move-away → ask;
 - direct filesystem writes to `.git` → ask;
-- supported local Git operations → allow;
+- the exact Git allow set, including constrained `-C` and `fetch` → allow;
+- Git remote mutation, destructive/unlisted subcommands, alternate repository options, and unknown flags → ask;
 - finite external reads → allow;
 - external writes → ask;
+- mixed inside/outside commands without an exact situation-2 allow profile → ask;
 - recognized system-information profiles with no workspace relationship → allow;
 - narrowly approved network forms → allow;
 - uploads, remote mutation/execution, dynamic network requests, and unsupported network options → ask;
 - unknown commands and unsupported or indeterminate forms → ask;
 - parser failure/budget exhaustion → ask;
-- operations from different situations compose, and every operation must allow;
+- commands and redirects from different situations compose, and every decision unit must allow;
+- wrappers and embedded command strings are not recursively expanded and ask;
+- ordinary Bash environment assignments allow, while the fixed high-risk name set asks;
+- a command substitution inside an environment value remains an independent decision unit;
 - tracked and clean workspace entry scripts → allow;
 - staged, unstaged, untracked, external, dynamic, and ambiguous scripts → ask;
 - committed scripts with explicit external or dynamic path arguments → ask;
@@ -332,6 +388,7 @@ Required groups:
 - supported Node, Go, pip, Cargo, and Make workflows with committed unchanged control files → allow;
 - the same workflows with missing, staged, unstaged, untracked, or ambiguous required control files → ask;
 - unlisted subcommands of an otherwise recognized development tool → ask;
+- inside-workspace edits allow, while `.git`, external, and unresolved edit paths ask;
 - OpenCode transport, auth, event filtering, audit, and reply-race behavior.
 
 Use audit data to find the most frequent remaining prompts. Add a profile only when its semantics can stay small and its prompt reduction is worthwhile.
@@ -342,9 +399,12 @@ Use audit data to find the most frequent remaining prompts. Add a profile only w
 - Runtime enforcement of workspace boundaries or red lines.
 - Recursive script dependency analysis.
 - Package-hook and trusted-workflow inspection.
+- Curl configuration, proxy environment, and remote-side-effect verification.
+- Tool-specific effects of environment variables outside the fixed high-risk set.
 - Ambient `PATH` executable provenance.
 - Complete option grammars for external tools.
 - Arbitrarily nested or dynamic Bash.
+- Generic wrapper or embedded-command expansion.
 - Network/data-exfiltration control.
 - PowerShell and Windows `cmd` analysis.
 - Permissions other than `bash`, `external_directory`, and `edit`.
