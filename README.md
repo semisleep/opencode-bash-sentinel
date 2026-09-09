@@ -29,10 +29,13 @@ A harmless command may still require approval when it falls outside the supporte
 
 This situation applies when Sentinel recognizes an operation and every relevant filesystem target resolves inside the workspace, or when an explicit workspace trust rule applies.
 
-There are two red lines:
+There are three red lines:
 
-1. Directly deleting, removing, or moving away the workspace root asks.
-2. Directly modifying `.git` with an ordinary filesystem command asks. Git commands may maintain their own repository metadata.
+1. Do not directly delete, remove, or move away the workspace root.
+2. Do not directly modify `.git` with an ordinary filesystem command. Git commands may maintain their own repository metadata.
+3. Do not automatically execute a workspace script unless its entry file is committed to Git, unchanged in the current worktree, and invoked without a visibly external or ambiguous path argument.
+
+When a command hits a red line, Sentinel does not auto-approve it. OpenCode displays its native permission dialog and the user decides whether to continue.
 
 After those checks, every other recognized workspace operation is approved, whether it reads, writes, or deletes workspace subpaths:
 
@@ -43,7 +46,7 @@ sed -i 's/old/new/' src/config.ts
 rm -rf build/
 ~~~
 
-Direct root destruction and direct `.git` writes ask:
+Direct root destruction and direct `.git` writes require user approval:
 
 ~~~bash
 rm -rf .
@@ -53,7 +56,7 @@ echo broken > .git/config
 
 The red lines protect only effects visible in command syntax. They cannot constrain arbitrary behavior hidden inside a script, package hook, binary, or development tool.
 
-#### Workspace scripts
+#### Third red line: workspace scripts
 
 A directly invoked workspace script belongs to this first situation only when all of these checks succeed:
 
@@ -72,7 +75,7 @@ node scripts/build.js
 source scripts/env.sh
 ~~~
 
-Untracked or modified scripts, external scripts, inline code, stdin/heredoc programs, dynamic script paths, and scripts with visibly external or ambiguous path arguments move to the third situation and ask unless another exact rule applies.
+Untracked or modified scripts, external scripts, inline code, stdin/heredoc programs, dynamic script paths, and scripts with visibly external or ambiguous path arguments hit the third red line. Sentinel leaves them for user approval unless another exact rule applies.
 
 Only the entry script and visible command line are checked. Imported modules, sourced dependencies, configuration files, generated files, and runtime behavior are not recursively inspected. “Committed and unchanged” is a trusted repository baseline, not proof that the script stays inside the workspace.
 
@@ -89,7 +92,7 @@ rg pattern /usr/include
 git -C /another/repository log -1
 ~~~
 
-Recognized external writes ask:
+Recognized external writes require user approval:
 
 ~~~bash
 echo x > /tmp/out
@@ -107,7 +110,7 @@ This situation covers both:
 - operations that naturally have no filesystem workspace, such as system-information and network commands;
 - operations whose relationship to the workspace cannot be determined because the command, syntax, or relevant target is unknown or dynamic.
 
-Only exact, explicitly reviewed command-and-option profiles are approved here. Everything else asks. Typical informational profiles may include:
+Only exact, explicitly reviewed command-and-option profiles are approved here. Everything else is left to OpenCode's native user-approval dialog. Typical informational profiles may include:
 
 ~~~bash
 date
@@ -121,7 +124,7 @@ Network access belongs here, not in “outside the workspace.” A narrowly revi
 curl -fsSL https://example.com/data
 ~~~
 
-Upload, explicit mutation, remote execution, credential-bearing or dynamic requests, file-producing options, and unsupported network options ask:
+Upload, explicit mutation, remote execution, credential-bearing or dynamic requests, file-producing options, and unsupported network options require user approval:
 
 ~~~bash
 curl -X POST https://example.com/action
@@ -131,13 +134,23 @@ ssh host command
 
 An approved download form is a product trust decision, not proof that an HTTP request has no remote side effect or data exposure.
 
-Parser failure, resource-budget exhaustion, dynamic command names, unresolved relevant paths, and unsupported command structures also land in this third situation and ask.
+Parser failure, resource-budget exhaustion, dynamic command names, unresolved relevant paths, and unsupported command structures also land in this third situation and require user approval.
 
-#### Explicit npm exception
+#### Explicit development-workflow exceptions
 
-`npm run ...` is an exact trusted-workflow rule in the third situation. It is approved without inspecting `package.json`, lifecycle hooks, transitive tools, network activity, or the script it ultimately executes. A newly modified npm script can therefore perform external writes or either workspace red line without Sentinel seeing that internal behavior.
+A small set of conventional development workflows may be approved in the third situation. This is not a command-name allowlist: the invoked subcommand must be part of the reviewed profile, and the workflow's control files must exist in `HEAD` with no staged or unstaged changes.
 
-Other development tools should be added only as explicit, documented decisions driven by real prompt frequency.
+The initial target set is:
+
+- Node package scripts: `npm run ...`, `npm test`, `pnpm run ...`, `yarn run ...`, and `bun run ...`; require an unchanged `package.json`.
+- Go: conventional `go build`, `go test`, `go vet`, `go fmt`, and selected `go mod` workflows; require unchanged `go.mod` and, when present, `go.sum`.
+- Python packaging: read-only `pip list/show/check/freeze`, plus `pip install -r FILE` or `pip install .` only when the referenced requirements or project metadata files are committed and unchanged. The same rules apply to `python -m pip`.
+- Rust: conventional `cargo build/test/check/fmt/clippy`; require unchanged `Cargo.toml` and, when present, `Cargo.lock`.
+- Make: conventional `make TARGET`; require the selected `Makefile` or `GNUmakefile` to be committed and unchanged.
+
+These checks trust the committed workflow definition; they do not inspect transitive commands, hooks, source code executed by tests, runtime filesystem effects, or network activity. If a required control file is missing, untracked, modified, or ambiguous, Sentinel leaves the command for user approval.
+
+Additional ecosystems and subcommands should be added only as explicit, documented decisions driven by real prompt frequency.
 
 ### Commands containing more than one operation
 
@@ -149,7 +162,7 @@ For example:
 curl -fsSL https://example.com/data > result.json
 ~~~
 
-The network request is a third-situation profile and the redirect is a first-situation workspace write. If both profiles are approved, the complete command is approved. Changing the redirect to `/tmp/result.json` creates a second-situation external write, so the complete command asks.
+The network request is a third-situation profile and the redirect is a first-situation workspace write. If both profiles are approved, the complete command is approved. Changing the redirect to `/tmp/result.json` creates a second-situation external write, so the complete command requires user approval.
 
 Nested commands and wrappers are analyzed only where the implementation has a small, explicit rule. There is no requirement to support arbitrary composition.
 
@@ -159,7 +172,7 @@ Sentinel is a permission heuristic. It analyzes submitted command text and Git s
 
 - Workspace containment is lexical. A path inside the workspace that traverses a symlink to an external target is still treated as inside.
 - A committed and unchanged script is trusted as repository baseline, not proven safe.
-- `npm run ...` is an opaque trusted workflow.
+- Approved development workflows trust committed, unchanged control files but remain opaque at runtime.
 - Script dependencies and runtime-computed targets are not inspected.
 - Bare command names are not resolved to prove which executable the ambient `PATH` will launch.
 - Path comparison is literal and case-sensitive; case-insensitive filesystem behavior is not modeled.

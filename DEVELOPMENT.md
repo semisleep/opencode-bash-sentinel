@@ -42,7 +42,7 @@ type Situation =
   | "workspace-neutral-or-indeterminate"
 ```
 
-1. **Clearly inside the workspace:** apply the two red lines, then allow every other recognized workspace operation.
+1. **Clearly inside the workspace:** apply the three red lines, then allow every other recognized workspace operation.
 2. **Clearly outside the workspace:** allow only finite recognized read-only forms; ask for writes and unsupported forms.
 3. **No workspace relationship, or indeterminate:** allow only exact reviewed command-and-option profiles; ask for everything else.
 
@@ -55,24 +55,25 @@ Starting a process with the workspace as its cwd does not prove that it stays in
 - a supported command profile identifies its relevant visible targets as workspace paths; or
 - an explicit trust-boundary rule classifies it as a trusted workflow.
 
-The term explicitly excludes the two red lines below. Classification checks them first; only remaining workspace-contained operations are allowed.
+The term explicitly excludes the three red lines below. Classification checks them first; only remaining workspace-contained operations are allowed.
 
 The implementation analyzes command text, not runtime behavior. All guarantees are therefore limited to recognized syntax and visible effects.
 
 #### Workspace red lines
 
-There are two red lines:
+There are three red lines:
 
 1. Direct deletion, removal, or moving-away of the workspace root.
 2. Direct modification of a `.git` path by ordinary filesystem operations.
+3. Execution of a workspace script whose entry file is not committed and unchanged relative to `HEAD`, whose Git state cannot be confirmed, or whose visible arguments contain an explicit external or unresolved path.
 
 Deleting workspace subpaths is allowed. Git itself may update its repository metadata; a supported local Git operation is not considered a direct `.git` write.
 
-The red lines are not sandbox guarantees. Scripts, binaries, npm hooks, and other opaque processes can perform the same operations internally without the analyzer seeing them.
+Matching a red line produces an `ask` decision: Sentinel sends no approval reply, so OpenCode's native dialog remains for the user. The red lines are not sandbox guarantees. Scripts, binaries, package hooks, and other opaque processes can perform the same operations internally without the analyzer seeing them.
 
 #### Workspace script trust rule
 
-A workspace script may be treated as belonging to situation 1 only when:
+A workspace script avoids the third red line and may be treated as belonging to situation 1 only when:
 
 1. its entry path is literal and resolves lexically inside the workspace;
 2. the path is present in the current `HEAD`;
@@ -121,19 +122,27 @@ Parser failure, parser-budget exhaustion, dynamic command names, unresolved rele
 
 The intended response to a difficult edge case is usually “unsupported”, not another layer of semantic emulation.
 
-#### npm exception
+#### Development-workflow exceptions
 
-`npm run ...` is an explicit trusted workflow and is allowed without inspecting:
+A finite set of conventional development workflows may be allowed. A workflow qualifies only when:
 
-- whether `package.json` changed;
-- the referenced npm script;
-- lifecycle hooks;
-- transitive commands;
-- runtime paths or effects.
+1. its command and subcommand match a reviewed profile;
+2. every required control file exists in `HEAD`;
+3. none of those files has a staged or unstaged change;
+4. every visible path option covered by the profile satisfies that profile's path rule.
 
-This exception may bypass both external-write detection and the two workspace red lines when those effects occur inside npm-controlled code. That limitation is accepted and must remain prominent in README.
+Initial target profiles:
 
-Do not silently broaden this exception to every development tool. Additional opaque workflows require an explicit product decision and documentation.
+- **Node scripts:** `npm run ...`, `npm test`, `pnpm run ...`, `yarn run ...`, and `bun run ...`. Require `package.json` to be committed and unchanged.
+- **Go:** `go build`, `go test`, `go vet`, `go fmt`, `go mod download`, and `go mod tidy`. Require `go.mod` and, when present, `go.sum` to be committed and unchanged. Explicit output or directory paths are still classified normally.
+- **Python/pip information:** `pip list`, `pip show`, `pip check`, and `pip freeze`, including `python -m pip` equivalents. These exact informational profiles need no project control file.
+- **Python/pip installation:** `pip install -r FILE` requires that requirements file to be committed and unchanged. `pip install .` requires every present packaging control file among `pyproject.toml`, `setup.cfg`, and `setup.py` to be committed and unchanged, with at least one present in `HEAD`. The same rules apply to `python -m pip`.
+- **Rust:** `cargo build`, `cargo test`, `cargo check`, `cargo fmt`, and `cargo clippy`. Require `Cargo.toml` and, when present, `Cargo.lock` to be committed and unchanged.
+- **Make:** `make` with conventional targets. Require the selected makefile—an explicit `-f/--file` target or the applicable `GNUmakefile`/`Makefile`—to be committed and unchanged.
+
+These profiles trust only the committed workflow definition. They do not recursively inspect lifecycle hooks, transitive commands, modified source code executed by tests or generators, runtime filesystem effects, or network behavior. Those opaque effects may bypass external-write checks and the syntax-level red lines.
+
+A missing, untracked, modified, or ambiguous required control file produces `ask`. Do not silently broaden this set to an executable's other subcommands. Additional workflows require an explicit product decision, documentation, and tests.
 
 ### 3.5 Commands containing multiple operations
 
@@ -189,7 +198,7 @@ Profiles support the three situations without trying to merge their rules:
 
 1. Filesystem profiles identify visible read/write/delete/source/destination paths, which are then classified as inside or outside.
 2. Workspace-neutral profiles recognize an exact set of informational or network forms with no workspace classification.
-3. Trust-boundary profiles implement narrow assumptions such as `npm run ...` and committed unchanged workspace scripts.
+3. Trust-boundary profiles implement the third workspace red line and the finite development workflows whose control files are committed and unchanged.
 
 A profile either produces explicit operations or returns unsupported. It should not try to prove arbitrary runtime safety. The same filesystem profile can feed situation 1 or 2 depending on its resolved targets.
 
@@ -288,10 +297,10 @@ The recommended configuration routes Bash and edit requests through the approval
 1. Approve this product contract and resolve any remaining scope ambiguity.
 2. Add target-policy tests before deleting old behavior.
 3. Introduce an explicit operation/situation model and a small profile registry.
-4. Implement situation 1: the two red lines, ordinary workspace paths, and Git-backed workspace-script classification.
+4. Implement situation 1: the three red lines, ordinary workspace paths, and Git-backed workspace-script classification.
 5. Implement situation 2: the finite external-read profiles and external-write escalation.
 6. Implement situation 3: informational profiles, a narrow network profile set, and unsupported/indeterminate fallback.
-7. Add the explicit `npm run ...` trusted workflow.
+7. Add the finite Node, Go, pip, Cargo, and Make workflow profiles with Git-clean control-file checks.
 8. Implement per-operation composition and switch the plugin to the new decision path.
 9. Remove Kimi analyzer composition and obsolete confidence flags.
 10. Delete superseded tests and update README status only after runtime behavior matches.
@@ -320,7 +329,9 @@ Required groups:
 - staged, unstaged, untracked, external, dynamic, and ambiguous scripts → ask;
 - committed scripts with explicit external or dynamic path arguments → ask;
 - committed-script dependencies are not recursively inspected;
-- `npm run ...` → allow even with modified npm configuration, documenting the exception;
+- supported Node, Go, pip, Cargo, and Make workflows with committed unchanged control files → allow;
+- the same workflows with missing, staged, unstaged, untracked, or ambiguous required control files → ask;
+- unlisted subcommands of an otherwise recognized development tool → ask;
 - OpenCode transport, auth, event filtering, audit, and reply-race behavior.
 
 Use audit data to find the most frequent remaining prompts. Add a profile only when its semantics can stay small and its prompt reduction is worthwhile.
