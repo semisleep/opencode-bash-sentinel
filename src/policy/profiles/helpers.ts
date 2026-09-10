@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { SyntaxNode } from "../../parser/node";
-import type { UnitSeed, WorkspaceContext } from "../types";
+import type { Effect, UnitSeed, WorkspaceContext } from "../types";
 
 export function unsupported(node: SyntaxNode, reason: string): UnitSeed {
   return {
@@ -8,6 +8,32 @@ export function unsupported(node: SyntaxNode, reason: string): UnitSeed {
     text: node.text,
     situation: "workspace-neutral-or-indeterminate",
     allowed: false,
+    reason,
+  };
+}
+
+export function pathEffects(
+  node: SyntaxNode,
+  operands: string[] | undefined,
+  kind: Effect["kind"],
+  reason: string,
+): UnitSeed {
+  if (!operands) return unsupported(node, `unsupported ${reason}`);
+  if (operands.length === 0)
+    return {
+      kind: "command",
+      text: node.text,
+      situation: "workspace-neutral-or-indeterminate",
+      allowed: true,
+      reason: `${reason} without path`,
+    };
+  return {
+    kind: "command",
+    text: node.text,
+    effects: operands.map((item) => ({ kind, path: item })) as [
+      Effect,
+      ...Effect[],
+    ],
     reason,
   };
 }
