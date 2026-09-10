@@ -1,6 +1,8 @@
 # Development notes
 
-Maintainer-facing product definition and implementation plan for `opencode-bash-sentinel`. User-facing behavior and limitations are in [README.md](README.md).
+Maintainer-facing target-policy detail, current profile registry, and implementation plan for `opencode-bash-sentinel`. The normative product model, architectural invariants, extension contract, and change process are in [ARCHITECTURE.md](ARCHITECTURE.md). User-facing behavior and limitations are in [README.md](README.md).
+
+An ordinary command/profile change may update the finite sets in this document but must satisfy the architecture extension contract. It must not change a core invariant or trust boundary. If this document conflicts with `ARCHITECTURE.md` on the decision model, the architecture constitution controls.
 
 ## 1. Migration status
 
@@ -32,6 +34,8 @@ Sentinel is not:
 ## 3. Policy contract
 
 ### 3.1 Recognition and three situations
+
+This section instantiates the normative pipeline and situation contract from [ARCHITECTURE.md](ARCHITECTURE.md). Its decision order and fail-closed behavior are architectural; the finite command sets below are extensible current profiles.
 
 The parser and structural normalization layer first produce decision units for executable command nodes and explicit redirects. A finite recognizer must accept each unit's complete invocation shape and produce explicit facts such as path effects, profile family, mutation scopes, and stability dependencies. Classification maps those facts to a situation; it is not a second universal attempt to guess which arguments look like paths.
 
@@ -109,6 +113,8 @@ Recognized writes outside the workspace always ask. A recognized read is allowed
 
 External-read support is a finite set of common command profiles. Each profile should accept only simple, well-understood forms. Options that add execution or output behavior—such as preprocessors, `find -exec`, file-producing modes, or an unknown option with relevant semantics—cause `unsupported-or-unknown`.
 
+The identities and exact option sets of those external-read profiles form part of the current extensible registry. The situation-2 rule itself does not.
+
 There is no requirement to support every read-only utility or every safe option. An unrecognized but harmless read asks.
 
 If one recognized command has both workspace and external filesystem targets, classify the whole command unit as situation 2. Do not split sources and destinations merely to recover additional allow cases: for example, both `cp /tmp/input .` and `mv /tmp/input .` may conservatively require user approval when no exact situation-2 profile accepts them.
@@ -120,7 +126,13 @@ This situation contains two subtypes:
 - **workspace-neutral:** the recognized operation has no meaningful filesystem target, such as system information or network access;
 - **indeterminate:** a filesystem relationship may exist, but relevant syntax, commands, or targets cannot be classified.
 
-Only exact, explicitly reviewed command-and-option profiles are allowed. The initial informational family covers bounded ordinary forms of `date`, `uname`, `uptime`, `whoami`, `id`, `free`, `vm_stat`, `nproc`, `lscpu`, and `ps`, plus plain stdout-only `echo` and `printf` forms. Each implementation profile must enumerate accepted flags; an unknown flag returns unsupported. In particular, the `printf` profile must reject assignment forms such as `printf -v`.
+Only exact, explicitly reviewed command-and-option profiles are allowed.
+
+#### Current informational and network profiles
+
+The following names and option sets are an extensible **CURRENT PROFILE** registry. The situation-3 exact-match requirement is architectural.
+
+The initial informational family covers bounded ordinary forms of `date`, `uname`, `uptime`, `whoami`, `id`, `free`, `vm_stat`, `nproc`, `lscpu`, and `ps`, plus plain stdout-only `echo` and `printf` forms. Each implementation profile must enumerate accepted flags; an unknown flag returns unsupported. In particular, the `printf` profile must reject assignment forms such as `printf -v`.
 
 Network commands belong here, not in situation 2. The initial network family contains `curl` only:
 
@@ -135,7 +147,9 @@ Parser failure, parser-budget exhaustion, dynamic command names, unresolved rele
 
 The intended response to a difficult edge case is usually “unsupported”, not another layer of semantic emulation.
 
-#### Git profiles
+#### Current Git profiles
+
+The exact subcommand and option sets below are extensible **CURRENT PROFILES**. Keeping Git in situation 3 and refusing unknown forms are architectural decisions.
 
 Every Git invocation belongs to situation 3, even when it has path operands or starts from the OpenCode workspace. This deliberately avoids inferring repository scope from ambient cwd.
 
@@ -145,7 +159,9 @@ The initial ordinary-form allow set is `status`, `diff`, `log`, `show`, `blame`,
 
 `push`, `pull`, `reset`, `clean`, `checkout`, `switch`, `restore`, credential/configuration mutation, and every unlisted subcommand ask in the initial policy. Git hooks, aliases, filters, configuration, and repository selection affected by ambient state are not recursively inspected.
 
-#### Environment assignments
+#### Current environment-assignment profile
+
+The default treatment of Bash assignment syntax is part of the documented trust model. The high-risk names are an extensible **CURRENT PROFILE** registry: adding a conservative denial is an ordinary extension, while removing one requires explicit policy review.
 
 Leading Bash `NAME=value` assignments are allowed and ignored while classifying the associated executable. Standalone assignments and recognized assignment forms of `export`, `declare`, `typeset`, and `readonly` are also allowed. Both rules exclude this fixed high-risk name set:
 
@@ -155,7 +171,9 @@ Apply the set to direct assignments and recognized `export`, `declare`, `typeset
 
 The `env ... COMMAND` executable is not assignment syntax. It is an unsupported wrapper in the initial policy.
 
-#### Development-workflow exceptions
+#### Current development-workflow profiles
+
+The ecosystems, subcommands, options, and direct control-file mappings below are extensible **CURRENT PROFILES**. Trusting only explicitly checked direct control files, and treating all other behavior as opaque, is an architectural trust boundary.
 
 A finite set of conventional development workflows is allowed only when:
 
@@ -225,6 +243,8 @@ The `edit` gate does not use Bash command profiles:
 Editing a script is allowed. The third workspace red line is evaluated only if that modified script is later executed.
 
 ## 4. Target architecture
+
+This section describes an implementation of the normative model in [ARCHITECTURE.md](ARCHITECTURE.md). Module boundaries and internal types may be refactored, but the layer responsibilities and observable invariants must remain intact unless the architecture-change process is followed.
 
 The parser, policy, and OpenCode integration should have separate responsibilities:
 
@@ -391,6 +411,8 @@ The recommended configuration routes Bash and edit requests through the approval
 10. Delete superseded tests and update README status only after runtime behavior matches.
 
 Avoid preserving old edge-case behavior merely because a regression test exists. Tests derived from the superseded policy should be deliberately reviewed against this contract.
+
+Implementation must also add a distinct architecture-contract test suite covering the invariants listed in [ARCHITECTURE.md](ARCHITECTURE.md), separate from the evolving command-profile cases below.
 
 ## 9. Test strategy
 

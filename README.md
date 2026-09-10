@@ -305,4 +305,6 @@ MIT. Portions Copyright (c) 2026 Moonshot AI, Inc. See [LICENSE](LICENSE) and [N
 
 ## Development
 
-The target architecture, current migration gap, integration facts, and test strategy live in [DEVELOPMENT.md](DEVELOPMENT.md).
+The stable product model, trust assumptions, decision pipeline, extension boundaries, and architecture-change process live in [ARCHITECTURE.md](ARCHITECTURE.md). Current profile details, the implementation gap, integration facts, migration plan, and test strategy live in [DEVELOPMENT.md](DEVELOPMENT.md).
+
+Adding a recognized command or option is an expected extension when it fits the existing fact and situation model. Changing decision-unit boundaries, the three situations, fail-closed behavior, red lines, aggregation, or a documented trust boundary requires an explicit architecture decision and synchronized documentation and tests; it must not be smuggled into a command-specific fix.
