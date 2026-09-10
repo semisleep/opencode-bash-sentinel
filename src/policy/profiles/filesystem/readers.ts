@@ -35,8 +35,8 @@ const GRAMMARS: Record<string, OptionGrammar> = {
       "--size",
     ]),
   },
-  head: { short: "qvz", shortWithValue: "cn" },
-  tail: { short: "fqsvz", shortWithValue: "cn" },
+  head: { short: "qvz", shortWithValue: "cn", numeric: true },
+  tail: { short: "fqsvz", shortWithValue: "cn", numeric: true },
   wc: { short: "clmwL" },
   stat: { short: "LfZ", shortWithValue: "c" },
   file: { short: "bEhiklLNnprsSvz" },
@@ -48,6 +48,29 @@ const GRAMMARS: Record<string, OptionGrammar> = {
   cmp: { short: "bls", shortWithValue: "in" },
   cut: { short: "Dnsz", shortWithValue: "bcdf" },
   strings: { short: "adlx", shortWithValue: "enstT" },
+  // Read-only operand model; output (-o/--output), temp (-T), and
+  // --compress-program forms are deliberately not in the grammar.
+  sort: {
+    short: "bcCdfghiMmnRrsuVz",
+    shortWithValue: "kt",
+    long: new Set([
+      "--ignore-leading-blanks",
+      "--dictionary-order",
+      "--ignore-case",
+      "--general-numeric-sort",
+      "--human-numeric-sort",
+      "--month-sort",
+      "--numeric-sort",
+      "--reverse",
+      "--random-sort",
+      "--stable",
+      "--unique",
+      "--version-sort",
+      "--check",
+      "--merge",
+      "--zero-terminated",
+    ]),
+  },
 };
 
 export function recognizeFilesystemReader(

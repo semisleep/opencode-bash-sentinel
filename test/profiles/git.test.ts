@@ -11,6 +11,8 @@ describe("git profile", () => {
     allow("git fetch origin main");
     allow("git fetch https://example.com/org/repo.git main:incoming");
     allow("git -C /tmp/repo log --oneline");
+    allow("git diff --check");
+    allow("git diff --cached --check --stat");
     ask("git push");
     ask("git reset --hard");
     ask("git -c alias.x='!evil' x");

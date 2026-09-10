@@ -9,6 +9,8 @@ export type OptionGrammar = {
   short?: string;
   shortWithValue?: string;
   long?: ReadonlySet<string>;
+  /** Accept a bare count like `-8` where the tool means `-n 8`. */
+  numeric?: boolean;
 };
 
 export function literalArguments(
@@ -44,6 +46,7 @@ export function parseArguments(
       return;
     }
     if (options && argument.startsWith("-") && argument !== "-") {
+      if (grammar.numeric && /^-\d+$/.test(argument)) continue;
       const letters = argument.slice(1);
       for (let offset = 0; offset < letters.length; offset++) {
         const name = letters[offset]!;

@@ -19,6 +19,10 @@ describe("filesystem reader profiles", () => {
       "cmp -n 5 before after",
       "cut -d , -f 1 file",
       "strings -n 4 binary",
+      "sort -u file",
+      "sort -k 2 -t , file",
+      "tail -5 file",
+      "head -3 file",
     ])
       allow(source);
   });
@@ -34,5 +38,24 @@ describe("filesystem reader profiles", () => {
     ask("cmp before after invalid-skip");
     ask("cut file");
     ask(String.raw`cat $'\x2fetc/passwd'`);
+  });
+
+  it("supports numeric line-count shorthand for head and tail", () => {
+    allow("tail -8");
+    allow("cat x | head -5");
+    allow("tail -n 8 file");
+    ask("tail -8x");
+    ask("tail -n");
+  });
+
+  it("keeps sort read-only", () => {
+    allow("sort");
+    allow("sort -n -r file");
+    allow("sort --check file");
+    ask("sort -o out file");
+    ask("sort --output=out file");
+    ask("sort -T /tmp file");
+    ask("sort --compress-program=gzip file");
+    ask("sort -Z file");
   });
 });

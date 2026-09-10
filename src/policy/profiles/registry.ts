@@ -5,6 +5,7 @@ import { recognizeCurl } from "./curl";
 import { recognizeDd } from "./dd";
 import { isRiskyEnvironmentName } from "./environment";
 import { recognizeFilesystem } from "./filesystem";
+import { recognizeFind } from "./find";
 import { recognizeGit } from "./git";
 import { recognizeGoWorkflow } from "./go";
 import { unsupported } from "./helpers";
@@ -73,6 +74,7 @@ export function recognizeCommand(
     return recognizeInformation(node, invocation, ctx, cwd, name);
   if (name === "sed") return recognizeSed(node, invocation);
   if (name === "uniq") return recognizeUniq(node, invocation);
+  if (name === "find") return recognizeFind(node, invocation);
   if (name === "dd") return recognizeDd(node, invocation);
   if (SEARCH_NAMES.has(name)) return recognizeSearch(node, invocation, name);
   return (

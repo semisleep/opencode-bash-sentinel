@@ -33,6 +33,7 @@ const FLAGS: Record<string, Set<string>> = {
     "--name-status",
     "--cached",
     "--staged",
+    "--check",
     "--quiet",
     "--exit-code",
     "--no-ext-diff",
