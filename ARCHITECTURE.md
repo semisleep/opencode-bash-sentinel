@@ -64,6 +64,28 @@ Control flow, shell scope, job control, generic wrapper unwrapping, embedded com
 
 A recognizer either accepts a complete invocation and emits all required facts, or returns unsupported. A rejected specific profile must not fall through to a broader profile. Path extraction is command-specific; the classifier never guesses that arbitrary arguments are paths.
 
+### Effective directory and path classification
+
+Every decision unit has one normalization-time **effective cwd**. How that directory is derived is a core invariant:
+
+1. The default is the OpenCode-provided session cwd. The workspace root is a separate containment boundary and must not replace it.
+2. Only the exact supported form `cd LITERAL_DIR && COMMAND` assigns the resolved directory to the right-hand command unit and any redirect units attached to that command.
+3. That derived cwd is scoped to the right-hand command expression. It is not propagated across `;`, newline, `||`, pipelines, nested command substitutions, sibling commands, or subsequent commands.
+4. A dynamic or structurally unsupported cwd transition makes the complete source unsupported. Profiles must not implement their own cwd propagation.
+
+After normalization assigns the effective cwd, the selected complete-invocation recognizer identifies that unit's **classification targets**. Relative targets resolve from the unit's effective cwd; absolute paths remain absolute; `~` uses the supplied home directory; dynamic or otherwise unresolved targets remain unresolved. Resolution is lexical and does not canonicalize symlinks.
+
+Situation derivation from those targets is also stable:
+
+- if any classification target is unresolved, the unit is indeterminate and enters situation 3;
+- otherwise, if any classification target is outside the workspace, the entire unit enters situation 2;
+- otherwise, if at least one classification target exists, the unit enters situation 1;
+- a unit with no filesystem classification target does not become situation 1 merely because its effective cwd is inside the workspace; it requires an explicit situation-3 profile.
+
+Classification targets are command-specific. A profile may define which of its operands have path roles, but it may not change the resolution algorithm or situation precedence. For direct scripts, only the entry-script path is a classification target; visible arguments are checked separately by the script red line. Redirects are independent decision units and use the effective cwd assigned at their AST position.
+
+Some situation-3 profiles may consult the effective cwd to locate a control file or constrain an explicit selector. That dependency does not turn the command into a situation-1 filesystem operation. Git likewise remains situation 3 even when `-C` is constrained using a resolved directory.
+
 ### Typed facts
 
 The stable fact model includes:
