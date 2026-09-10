@@ -11,6 +11,7 @@ import type {
 export function defaultWorkspaceContext(
   workspace: string,
   cwd: string = workspace,
+  extraSensitiveRoots: readonly string[] = [],
 ): WorkspaceContext {
   const root = path.normalize(workspace);
   return {
@@ -18,6 +19,7 @@ export function defaultWorkspaceContext(
     cwd: path.normalize(cwd),
     homedir: os.homedir(),
     baseline: new GitBaseline(root),
+    extraSensitiveRoots,
   };
 }
 

@@ -14,6 +14,8 @@ export interface WorkspaceContext {
   readonly cwd: string;
   readonly homedir: string;
   readonly baseline: BaselineInspector;
+  /** Additive sensitive-read roots unioned with the ADR-0002 defaults. */
+  readonly extraSensitiveRoots?: readonly string[];
 }
 
 export interface DecisionUnit {

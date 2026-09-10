@@ -123,6 +123,8 @@ If any classification target of a recognized filesystem operation is external, t
 
 Only finite recognized external reads allow. External writes and unsupported forms ask.
 
+One read red line applies here, symmetric to the situation-1 `.git` red line: a recognized external read still asks when a target resolves under a designated sensitive root (for example a credential or key store). The set is a conservative, best-effort catalogue, may be extended additively per context, and matches lexically like workspace containment; it narrows allow toward ask only and never turns an ask into an allow.
+
 ### 3. No workspace relationship, or indeterminate
 
 This includes both recognized workspace-neutral operations and forms whose workspace relationship cannot be determined.

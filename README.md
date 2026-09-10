@@ -43,13 +43,16 @@ The last example asks when that entry file is modified, untracked, committed onl
 
 ### Outside the workspace
 
-A finite set of recognized read-only forms is allowed. Recognized writes and unsupported forms require approval.
+A finite set of recognized read-only forms is allowed. Recognized writes and unsupported forms require approval. Reads of a small, conservative set of sensitive paths (credential and key stores such as `~/.ssh`, `~/.aws`, `~/.gnupg`) instead ask, so an agent cannot silently spill them into the transcript.
 
 ```bash
 cat /etc/hosts       # allow
 ls -la /tmp          # allow
 echo x > /tmp/out    # ask
+cat ~/.ssh/id_rsa    # ask
 ```
+
+The sensitive list is best-effort, not a completeness guarantee: an unlisted path keeps the ordinary external-read behavior, and matching is lexical, so a symlink pointing at a sensitive location is not caught. Extra roots can be added with the `sensitivePaths` option; they only add prompts.
 
 If one recognized command mixes inside and outside targets, the entire command is treated as outside.
 
@@ -129,6 +132,7 @@ The `edit` route is optional but recommended for consistent workspace and `.git`
 |---|---|---|
 | `audit` | `false` | Append one JSONL line per decision |
 | `logPath` | `~/.local/share/opencode/bash-sentinel-audit.jsonl` | Audit-log destination |
+| `sensitivePaths` | `[]` | Extra sensitive-read roots, unioned with the built-in defaults (additive only) |
 
 ## Development and provenance
 

@@ -12,6 +12,7 @@ import {
 } from "./profiles/environment";
 import { recognizeCommand } from "./profiles/registry";
 import { recognizeRedirect } from "./redirect";
+import { isSensitiveTarget } from "./sensitive";
 import type {
   DecisionUnit,
   Effect,
@@ -99,6 +100,18 @@ function finalize(
     allowed &&=
       effects.length > 0 && effects.every((effect) => effect.kind === "read");
     if (!allowed) reason = "external write or unsupported external operation";
+    // Situation-2 read red line: a recognized external read still asks when a
+    // target resolves under a designated sensitive root (ADR-0002).
+    else if (
+      resolved.some(
+        (item) =>
+          item.path &&
+          isSensitiveTarget(item.path, ctx.homedir, ctx.extraSensitiveRoots),
+      )
+    ) {
+      allowed = false;
+      reason = "sensitive external read";
+    }
   } else if (situation === "workspace-neutral-or-indeterminate") {
     allowed &&= seed.allowed === true;
   } else {

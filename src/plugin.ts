@@ -7,6 +7,8 @@ import { defaultWorkspaceContext, hasGitSegment, withinWorkspace } from "./works
 export interface BashSentinelOptions {
   audit?: boolean
   logPath?: string
+  /** Additional sensitive-read roots, unioned with the ADR-0002 defaults. */
+  sensitivePaths?: string[]
 }
 
 const DEFAULT_LOG_PATH = "~/.local/share/opencode/bash-sentinel-audit.jsonl"
@@ -27,7 +29,7 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
   const config = parseOptions(options)
   const workspace =
     input.worktree && input.worktree.length > 0 ? input.worktree : input.directory
-  const ctx = defaultWorkspaceContext(workspace, input.directory)
+  const ctx = defaultWorkspaceContext(workspace, input.directory, config.sensitivePaths)
 
   void probeTransport(input, config)
 
@@ -186,11 +188,14 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
   }
 }
 
-function parseOptions(options: unknown): { audit: boolean; logPath: string } {
+function parseOptions(options: unknown): { audit: boolean; logPath: string; sensitivePaths: string[] } {
   const raw = (options ?? {}) as BashSentinelOptions
   return {
     audit: raw.audit === true,
     logPath: typeof raw.logPath === "string" && raw.logPath.length > 0 ? raw.logPath : DEFAULT_LOG_PATH,
+    sensitivePaths: Array.isArray(raw.sensitivePaths)
+      ? raw.sensitivePaths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+      : [],
   }
 }
 
