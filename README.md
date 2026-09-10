@@ -67,6 +67,8 @@ A supported direct script invocation is classified from its entry-script path. W
 3. It has no staged or unstaged change relative to `HEAD`.
 4. Its visible arguments contain no explicit external path or unresolvable/dynamic path that could plausibly select an external target.
 
+Only the entry-script path chooses the situation. Visible arguments are a script-specific red-line check, not inputs to a generic path classifier.
+
 This covers direct executables and supported interpreter/source forms:
 
 ~~~bash
@@ -143,7 +145,7 @@ ssh host command
 
 An approved download form is a product trust decision, not proof that an HTTP request has no remote side effect or data exposure. Curl's ambient configuration and proxy environment are not inspected.
 
-Parser failure, resource-budget exhaustion, dynamic command names, unresolved relevant paths, and unsupported command structures also land in this third situation and require user approval.
+Dynamic command names and unresolved relevant paths use this third situation and require user approval. Parser failure, resource-budget exhaustion, and unsupported source structure fail earlier in the pipeline and also require user approval; they are not classified as decision units.
 
 #### Explicit development-workflow exceptions
 
@@ -181,6 +183,10 @@ Assigning one of these names requires user approval because it can change execut
 
 Commands, redirects, and nested executable nodes such as command substitutions become separate decision units when they are represented by the Bash AST. Before any approval, every execution- or I/O-relevant AST node must either be consumed by a supported rule or cause the complete Bash source to require user approval. Unsupported nodes are never silently ignored.
 
+The initial supported composition subset includes simple commands and redirects, ordinary pipelines, flat lists joined by newline, `;`, `&&`, or `||`, leading Bash assignments, one literal `cd DIR` transition followed by a supported command, and fully extracted command substitutions whose containing invocation remains recognized. For lists and pipelines, every syntactically present unit must allow; Sentinel does not predict which branch or process will run.
+
+`if`, loops, `case`, functions, background jobs, subshells, brace groups, process substitutions, dynamic cwd changes, and other structures requiring control-flow or shell-state analysis require user approval in the initial policy.
+
 For example:
 
 ~~~bash
@@ -200,9 +206,7 @@ Both examples require approval even if all individual units would otherwise be a
 
 Wrapper arguments and embedded command strings are not reinterpreted as commands. `sudo`, `env ... COMMAND`, `timeout`, `watch`, `nohup`, `nice`, `stdbuf`, `xargs`, `sh -c`, `bash -c`, and `eval` therefore enter the third situation and require user approval in the initial policy. This avoids recursive wrapper grammars and arbitrary nested analysis.
 
-Literal `cd DIR` followed by a simple command may update the cwd used to resolve that next command. Dynamic cwd changes, branching cwd state, or more complex control flow are unsupported and require user approval.
-
-Every redirection form must also be explicitly understood. Read-write redirects such as `<>` are writes. Bash network paths such as `/dev/tcp/...` and `/dev/udp/...`, dynamic file-descriptor paths, and a heredoc, here-string, process substitution, or expansion whose executable contents are not completely accounted for require user approval. Ordinary exact exceptions such as `/dev/null` may have their own finite rule.
+Every redirection form must also be explicitly understood. Read-write redirects such as `<>` are writes. Bash network paths such as `/dev/tcp/...` and `/dev/udp/...`, dynamic file-descriptor paths, heredocs, here-strings, process substitutions, and expansions whose executable contents are not completely accounted for require user approval in the initial policy. Ordinary exact exceptions such as `/dev/null` may have their own finite rule.
 
 The complete Bash source is automatically approved only when parsing succeeds, all relevant AST nodes are accounted for, every decision unit is allowed by its situation, and no mutation scope overlaps a stability dependency.
 
@@ -229,7 +233,7 @@ Use OS- or container-level sandboxing when these boundaries are insufficient.
 
 ## File-edit permission
 
-The OpenCode `edit` permission uses a separate, simple path rule:
+The OpenCode `edit` permission is separate from the Bash command architecture and will be reviewed independently. Its current implementation uses this simple path rule:
 
 - an edit to an ordinary path inside the workspace is automatically approved;
 - an edit to `.git`, outside the workspace, or to an unresolved path requires user approval.
@@ -238,7 +242,7 @@ Editing a workspace script is allowed. The third red line applies when that now-
 
 ## OpenCode behavior
 
-The Bash-risk and `external_directory` permissions are separate OpenCode requests. One command may therefore produce two dialogs. Approval of directory access is not approval of a separate Bash-risk request.
+The `bash` and `external_directory` permissions are separate OpenCode requests. One command may therefore produce two dialogs, and approval at either gate does not approve the other. Sentinel nevertheless applies the same complete Bash analysis, three situations, red lines, and aggregation requirements at both gates; `external_directory` is not a relaxed policy path.
 
 - OpenCode `deny` rules win before Sentinel is consulted.
 - A session-scoped “always allow” answer bypasses Sentinel for later matching commands.

@@ -89,6 +89,8 @@ A supported direct script invocation is classified from its entry-script path. A
 4. Git status can be determined without ambiguity;
 5. its visible arguments contain no explicit external filesystem path and no dynamic or unresolvable path expression.
 
+Only the entry-script path participates in situation classification. The script recognizer defines its own visible-argument checks as part of the third red line; those operands are not fed into a generic path classifier and do not require a second cross-cutting path-fact system.
+
 This covers direct executable paths and supported interpreter/source forms:
 
 ```bash
@@ -205,13 +207,15 @@ For `curl -fsSL URL > result.json`, the curl command uses a situation-3 profile 
 
 Executable commands, redirects, and nested executable nodes such as command substitutions become decision units when represented by the Bash AST. Every execution- or I/O-relevant AST node must be consumed by a supported normalization rule or make the complete source unsupported. Approval is forbidden when normalization leaves a relevant node or construct unaccounted for. This full-consumption invariant prevents parser additions and uncommon syntax from becoming silent policy gaps.
 
-All redirect operators must be classified explicitly. Treat `<>` and analogous read-write forms as writes. Bash network paths such as `/dev/tcp/...` and `/dev/udp/...`, dynamic file-descriptor paths such as `/dev/fd/...` or `/proc/self/fd/...`, and any heredoc, here-string, process substitution, arithmetic expansion, or other expansion whose executable contents cannot be completely extracted are unsupported. `/dev/null` may be an exact finite exception. Do not infer that an unfamiliar external input redirect is an ordinary file read.
+All redirect operators must be classified explicitly. Treat `<>` and analogous read-write forms as writes. Bash network paths such as `/dev/tcp/...` and `/dev/udp/...`, dynamic file-descriptor paths such as `/dev/fd/...` or `/proc/self/fd/...`, heredocs, here-strings, process substitutions, and any arithmetic or other expansion whose executable contents cannot be completely extracted are unsupported initially. `/dev/null` may be an exact finite exception. Do not infer that an unfamiliar external input redirect is an ordinary file read.
 
 Do not reinterpret wrapper arguments, `sh -c` strings, `eval` text, `xargs` operands, or `find -exec` operands as nested commands. The containing invocation is unsupported as described below, so its unparsed string is not silently approved.
 
 The initial policy has no allow profile for `sudo`, `doas`, `env ... COMMAND`, `timeout`, `watch`, `nohup`, `nice`, `stdbuf`, `xargs`, `sh -c`, other shell `-c` forms, or `eval`. They enter situation 3 and ask as whole invocations. A future high-frequency wrapper may receive one exact invocation profile, but must not introduce a generic recursive unwrapping engine.
 
-Support at most one simple cwd transition: literal `cd DIR` followed by a simple sequential command may change the cwd used for that command's explicit relative paths. Dynamic cwd changes, branching/alternate cwd states, or more complex control flow ask. Do not reason about whether `&&`, `||`, conditions, or loops execute at runtime; every syntactically present decision unit must allow.
+The initial supported composition subset is limited to simple commands and redirects, ordinary pipelines, flat lists joined by newline, `;`, `&&`, or `||`, leading Bash assignments, one literal `cd DIR` transition followed by a supported command, and fully extracted command substitutions whose containing invocation remains completely recognized. For supported lists and pipelines, do not reason about which branch or process runs; every syntactically present decision unit must allow.
+
+`if`, `for`, `while`, `until`, `case`, `select`, function definitions, background jobs, subshells, brace groups, process substitutions, dynamic cwd changes, and other structures requiring branch, scope, job-control, or shell-state analysis make the complete source unsupported in the initial policy.
 
 #### Stability conflicts
 
@@ -220,7 +224,7 @@ Decision units may contribute two generic path sets:
 - `mutationScopes`: paths or directory ranges whose contents, existence, or location the visible syntax may directly modify, remove, truncate, or move;
 - `stabilityDependencies`: paths whose analysis-time state is a prerequisite for that unit's approval, including a trusted workspace entry script and a development workflow's checked control files.
 
-If any mutation scope overlaps any stability dependency from another unit in the same Bash source, the complete source asks. Equality and ancestor/descendant coverage count as overlap. The comparison is intentionally independent of syntactic order and control flow; a conservative false prompt is preferable to simulating execution order.
+If any mutation scope overlaps any stability dependency in the same Bash source, the complete source asks, whether the two facts come from the same decision unit or different units. Equality and ancestor/descendant coverage count as overlap. The comparison is intentionally independent of syntactic order and control flow; a conservative false prompt is preferable to simulating execution order.
 
 For example, both `sed -i ... scripts/check.sh && ./scripts/check.sh` and `printf ... > package.json && npm run build` ask even when their individual units would otherwise allow. This prevents an approval check from relying on a file snapshot that another visible unit may invalidate before use.
 
@@ -233,9 +237,15 @@ The complete source allows only when all four conditions hold:
 3. every decision unit allows under the rule for its situation;
 4. no mutation scope overlaps a stability dependency.
 
-### 3.6 File-edit permission
+### 3.6 OpenCode permission gates
 
-The `edit` gate does not use Bash command profiles:
+OpenCode may emit `bash` and `external_directory` as separate permission requests for the same command. They are independent gates, but neither is a separate or weaker policy: both must invoke the same complete Bash analysis pipeline and satisfy the same parsing, structural-coverage, recognition, situation, red-line, all-unit, and stability-conflict requirements. Approving either request does not approve the other.
+
+Gate-specific adapter code may translate event data and reply to OpenCode, but it must not add command semantics, skip decision units, or create an `external_directory` allow path outside the three-situation model.
+
+### 3.7 File-edit permission
+
+The `edit` gate is intentionally outside the Bash command architecture and will be considered separately. It does not use Bash command profiles; its current path rule is:
 
 - a resolved ordinary path inside the workspace allows;
 - a `.git` path, external path, or unresolved path asks.
@@ -244,7 +254,7 @@ Editing a script is allowed. The third workspace red line is evaluated only if t
 
 ## 4. Target architecture
 
-This section describes an implementation of the normative model in [ARCHITECTURE.md](ARCHITECTURE.md). Module boundaries and internal types may be refactored, but the layer responsibilities and observable invariants must remain intact unless the architecture-change process is followed.
+This section describes an implementation of the normative model in [ARCHITECTURE.md](ARCHITECTURE.md). Module boundaries and internal types may be refactored, but the layer responsibilities and observable invariants must remain intact unless the architecture-change process is followed. The pipeline below applies to the `bash` and `external_directory` gates; `edit` remains a separate policy.
 
 The parser, policy, and OpenCode integration should have separate responsibilities:
 
@@ -279,12 +289,14 @@ Keep the existing pure-TypeScript Bash parser as a bounded syntax service. A par
 
 Normalize only the structures the policy deliberately supports:
 
-- simple commands and ordinary compound lists;
-- redirects;
+- simple commands and redirects;
+- ordinary pipelines;
+- flat command lists joined by newline, `;`, `&&`, or `||`;
 - leading Bash assignments;
-- one literal, simple cwd transition where useful.
+- one literal `cd DIR` transition followed by a supported command;
+- fully extracted command substitutions whose containing invocation remains completely recognized.
 
-Do not normalize wrapper arguments or embedded strings into commands. Unsupported wrappers, nested payloads, dynamic cwd, and complex control flow produce situation-3 ask decisions.
+Do not normalize wrapper arguments or embedded strings into commands. Unsupported wrappers, nested payloads, dynamic cwd, `if`, loops, `case`, functions, background jobs, subshells, brace groups, process substitutions, and other complex control flow make the complete source unsupported and produce an ask decision.
 
 Normalization must report whether it consumed every execution- or I/O-relevant AST node. An unconsumed relevant node makes the complete source unsupported even when all extracted units would independently allow. New parser node types therefore fail closed until normalization explicitly handles or rejects them.
 
@@ -296,7 +308,7 @@ Finite recognizers and profiles support the three situations without trying to m
 
 1. Path recognizers accept complete, simple invocation shapes and produce typed read, write, delete, move, source, and destination path facts used to choose situation 1 or 2.
 2. Situation-3 recognizers produce exact informational, network, Git, and development-workflow profile candidates.
-3. The workspace-script recognizer identifies the entry path; the checker implements the third red line with a shared committed-and-unchanged predicate.
+3. The workspace-script recognizer identifies only the entry path for situation classification; the checker implements the third red line, including its profile-specific visible-argument checks, with a shared committed-and-unchanged predicate.
 4. Redirect recognizers create separate units and classify the complete redirect form, including whether it reads, writes, duplicates an fd, contains executable expansion, or uses a special Bash path.
 
 A recognizer either accepts the whole supported shape and produces all required facts, or returns unsupported; partial recognition must not produce an allow. Rejection by a path recognizer must not fall through to a broader profile for the same invocation. Recognizers should not try to prove arbitrary runtime safety. The same path recognizer can feed situation 1 or 2 depending on its resolved targets.
@@ -313,12 +325,14 @@ Reasons are part of the result so tests and audit logs can explain why a command
 
 - read a permission event;
 - obtain the command or edit path;
-- invoke the policy once;
+- invoke the shared Bash policy once for `bash` or `external_directory`, or the separate edit policy for `edit`;
 - reply `once` only for `allow`;
 - audit the decision when enabled;
 - swallow benign reply races.
 
-It must not contain command semantics.
+The `bash` and `external_directory` event adapters must both invoke the same policy architecture and satisfy the same allow invariants. They remain independent OpenCode requests, so approval of one never stands in for approval of the other. The `edit` adapter is separate pending its own architectural review.
+
+The adapter must not contain command semantics.
 
 ## 5. Kimi provenance and divergence
 
@@ -382,7 +396,7 @@ The following facts were verified against OpenCode commit `ecbc6ccac85b3e8087b64
 6. The reply transport order is: dedicated SDK route, legacy SDK route, then raw new/legacy routes through the SDK-configured fetch. The configured fetch is required for in-process `opencode run`.
 7. Basic authorization is needed when `OPENCODE_SERVER_PASSWORD` is set.
 8. Human/plugin reply races are benign; the losing reply gets a not-found error and should be ignored.
-9. `external_directory` is separate from `bash`; directory consent is not Bash consent.
+9. `external_directory` is separate from `bash`; directory consent is not Bash consent. Sentinel's target architecture nevertheless subjects both gates to the same Bash policy invariants.
 10. Session-scoped “always” approvals bypass later plugin analysis.
 11. npm plugin loading enforces `engines.opencode`; keep the supported range conservative.
 

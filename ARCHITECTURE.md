@@ -9,9 +9,9 @@ It is normative. [README.md](README.md) explains user-visible behavior, while [D
 The project uses five labels:
 
 - **CORE INVARIANT:** part of the product or decision model. An ordinary feature, command addition, or bug fix must not change it.
-- **ARCHITECTURE DECISION:** a deliberate boundary that keeps the model finite. Changing it requires the architecture-change process in section 9.
+- **ARCHITECTURE DECISION:** a deliberate boundary that keeps the model finite. Changing it requires the architecture-change process in section 10.
 - **TRUST BOUNDARY:** an explicitly accepted limitation. It must not be described as a proved safety property.
-- **EXTENSION POINT:** behavior that may grow without changing the model, subject to section 8.
+- **EXTENSION POINT:** behavior that may grow without changing the model, subject to section 9.
 - **CURRENT PROFILE:** the present finite list of accepted commands, options, and control files. It is expected to evolve.
 
 “Stable” does not mean immutable forever. It means that only an explicit architecture decision may change the item; a local implementation convenience is not sufficient.
@@ -95,6 +95,17 @@ Every execution- or I/O-relevant AST node must be explicitly consumed by support
 
 Executable commands, redirects, and nested executable AST nodes such as command substitutions may become decision units. Strings interpreted only by another program are not recursively reparsed as Bash.
 
+The initial supported composition subset is deliberately small:
+
+- simple commands and redirects;
+- ordinary pipelines;
+- flat command lists joined by a newline, `;`, `&&`, or `||`;
+- leading Bash assignments;
+- one literal `cd DIR` transition followed by a supported command; and
+- command substitutions only when every inner executable node is extracted and the containing invocation remains completely recognized.
+
+For a supported list or pipeline, normalization does not predict which branch or process runs: every syntactically present decision unit must allow. `if`, `for`, `while`, `until`, `case`, `select`, function definitions, background jobs, subshells, brace groups, process substitutions, and other structures requiring branch, scope, job-control, or shell-state analysis make the complete source unsupported in the initial model.
+
 ### 4.2 Complete recognition
 
 A recognizer must either:
@@ -123,7 +134,9 @@ The existence and meaning of these three situations are **CORE INVARIANTS**.
 
 ### 5.1 Clearly inside the workspace
 
-A unit enters this situation only when a finite path recognizer accepts its complete form and all relevant recognized targets resolve lexically inside the workspace. Ambient cwd alone does not place a path-free command here.
+A unit enters this situation only when a finite path recognizer accepts its complete form and all path operands that recognizer defines as classification targets resolve lexically inside the workspace. Ambient cwd alone does not place a path-free command here.
+
+Path extraction is command-specific. For a supported direct script invocation, only the entry-script path selects the situation. The script red-line checker separately evaluates the visible arguments required by that profile; those arguments do not become generic classification targets or new cross-cutting fact types.
 
 Apply the three workspace red lines:
 
@@ -145,14 +158,22 @@ This situation contains both recognized workspace-neutral operations and forms w
 
 Only exact reviewed profiles allow. Everything else asks. Git, network commands, informational commands, and explicit development-workflow exceptions are represented here by current profiles rather than by inferred ambient workspace scope.
 
-## 6. Source aggregation contract
+## 6. OpenCode permission-gate contract
+
+OpenCode's `bash` and `external_directory` permissions are separate request gates, but both are governed by this same Bash policy architecture. An adapter for either gate must use the complete parse, normalization, recognition, three-situation, red-line, and source-aggregation pipeline. It must not introduce a relaxed `external_directory` policy or bypass any allow invariant.
+
+Approval at one gate does not imply approval at the other. When OpenCode emits both requests for one command, Sentinel evaluates and replies to each request independently under the same model.
+
+The `edit` permission is a separate path-based policy. It does not create Bash decision units, enter the three situations, or fall under the Bash command constitution in this document. Its current behavior may be documented for users and maintainers, but its long-term architecture will be decided separately.
+
+## 7. Source aggregation contract
 
 The complete Bash source allows only when all four **CORE INVARIANTS** hold:
 
 1. parsing and supported normalization succeed;
 2. every execution- or I/O-relevant AST node is accounted for;
 3. every decision unit allows under its own situation;
-4. no `mutationScope` overlaps a `stabilityDependency` from another unit.
+4. no `mutationScope` overlaps any `stabilityDependency` in the same source.
 
 Equality and ancestor/descendant coverage count as overlap. Stability-conflict comparison is deliberately order-independent. The aggregator does not simulate branches, runtime execution order, filesystem state transitions, or Shell state.
 
@@ -160,7 +181,7 @@ Git may currently establish the initial acceptability of a dependency, but the a
 
 The aggregator must not contain command-specific exceptions, allow one unit to override another unit's ask, or preserve cross-cutting confidence flags for a particular analyzer.
 
-## 7. Deliberately unsupported semantic expansion
+## 8. Deliberately unsupported semantic expansion
 
 The following are **ARCHITECTURE DECISIONS**:
 
@@ -168,12 +189,13 @@ The following are **ARCHITECTURE DECISIONS**:
 - Do not reinterpret `sh -c`, `eval`, `xargs`, `find -exec`, or similar embedded strings as nested Bash programs.
 - Do not build a general-purpose positional-argument path guesser.
 - Do not simulate arbitrary variables, functions, aliases, shell options, branches, loops, or runtime cwd state.
+- Do not add control-flow, scope, job-control, or shell-state semantics merely to recognize one command inside an unsupported structural form. Such a widening of the composition model is an architecture change; parser coverage that maps mechanically to existing decision units and facts remains an extension.
 - Do not recursively inspect scripts, package hooks, Git hooks, build graphs, or tool configuration.
 - Do not add a second danger analyzer whose verdict is composed with the three-situation model.
 
 An unsupported construct asks. Support for one high-frequency exact invocation may be proposed as a normal recognizer only when it maps completely to existing facts and does not introduce generic recursive semantics.
 
-## 8. Extension contract
+## 9. Extension contract
 
 The following are **EXTENSION POINTS**:
 
@@ -200,7 +222,7 @@ An extension must not:
 - silently widen unknown options, operands, or subcommands;
 - change a documented trust boundary.
 
-### 8.1 Extension acceptance checklist
+### 9.1 Extension acceptance checklist
 
 Every new or widened recognizer/profile must demonstrate that:
 
@@ -217,7 +239,7 @@ Every new or widened recognizer/profile must demonstrate that:
 
 Adding a conservative denial, such as a new high-risk environment name, normally fits this process. Removing a denial or adding a materially riskier allowed behavior requires explicit policy review even when the architecture remains unchanged.
 
-## 9. Architecture-change policy
+## 10. Architecture-change policy
 
 A change is architectural if it changes a core invariant, architecture decision, trust boundary, decision-unit kind, fact kind, situation meaning, or aggregation rule. It must not be hidden inside a feature, profile addition, refactor, or bug fix.
 
@@ -237,7 +259,7 @@ Before implementation, an architecture change requires a written decision record
 
 The architecture decision must be explicitly approved before code changes rely on it. “Support command X” and “fix test Y” are not sufficient architecture rationales. A proposed record may document an unresolved design, but it must not be marked accepted without explicit maintainer approval.
 
-### 9.1 Architectural-change test
+### 10.1 Architectural-change test
 
 If any answer below is yes, stop ordinary extension work and use the architecture-change process:
 
@@ -251,24 +273,28 @@ If any answer below is yes, stop ordinary extension work and use the architectur
 8. Does it change a trust assumption for scripts, workflows, environment, paths, executables, or network access?
 9. Does a specific command require a new branch outside its recognizer/profile?
 
-## 10. Current profile registry
+## 11. Current profile registry
 
 The exact current command, option, environment-name, Git, network, and development-workflow sets are **CURRENT PROFILES**, not constitutional invariants. The registry belongs in [DEVELOPMENT.md](DEVELOPMENT.md) and is summarized for users in [README.md](README.md). A profile must be enumerated there before its implementation is treated as part of the target policy.
 
 Their contents may evolve through the extension contract. Their placement in a situation and their interaction with the core invariants may not change through an ordinary profile edit.
 
-## 11. Contract tests
+The registry is expected to grow iteratively. It need not predict every future useful command, but each implemented allow form must be finite, exact, documented, and tested before it becomes part of the target policy.
+
+## 12. Contract tests
 
 Tests for individual commands may change with the registry. Separate architecture-contract tests must permanently exercise at least:
 
 - unknown and partially recognized forms ask;
 - parser errors, budgets, and unconsumed relevant AST nodes ask;
 - no recognizer fallback after partial rejection;
+- the supported composition subset is fully consumed, while unsupported control-flow and scope structures ask as complete sources;
 - each unit is classified exactly once and every unit must allow;
 - all three situation rules and their precedence;
 - no situation-3 profile overrides a workspace red line;
 - mixed inside/outside targets use situation 2;
-- overlapping mutation scopes and stability dependencies ask;
+- `bash` and `external_directory` adapters enforce the same policy invariants without treating either approval as approval of the other;
+- overlapping mutation scopes and stability dependencies ask, whether they originate in the same or different decision units;
 - non-overlapping scopes do not create a stability conflict;
 - wrappers and embedded strings do not trigger recursive interpretation;
 - classifier and aggregator results are independent of individual command names.
