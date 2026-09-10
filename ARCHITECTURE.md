@@ -101,10 +101,12 @@ The initial supported composition subset is deliberately small:
 - ordinary pipelines;
 - flat command lists joined by a newline, `;`, `&&`, or `||`;
 - leading Bash assignments;
-- one literal `cd DIR` transition followed by a supported command; and
+- one exact literal `cd DIR && COMMAND` transition, with the derived cwd applied only to that right-hand command; and
 - command substitutions only when every inner executable node is extracted and the containing invocation remains completely recognized.
 
 For a supported list or pipeline, normalization does not predict which branch or process runs: every syntactically present decision unit must allow. `if`, `for`, `while`, `until`, `case`, `select`, function definitions, background jobs, subshells, brace groups, process substitutions, and other structures requiring branch, scope, job-control, or shell-state analysis make the complete source unsupported in the initial model.
+
+The cwd transition exception does not apply across `;`, newline, `||`, or a pipeline, because failure and subprocess semantics would make the right-hand cwd uncertain. A `cd` inside command substitution is unsupported initially. The workspace root remains the containment boundary; the OpenCode session directory is a separate initial cwd used only to resolve relative paths.
 
 ### 4.2 Complete recognition
 

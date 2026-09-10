@@ -27,7 +27,7 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
   const config = parseOptions(options)
   const workspace =
     input.worktree && input.worktree.length > 0 ? input.worktree : input.directory
-  const ctx = defaultWorkspaceContext(workspace)
+  const ctx = defaultWorkspaceContext(workspace, input.directory)
 
   void probeTransport(input, config)
 

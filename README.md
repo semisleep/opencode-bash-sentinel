@@ -129,6 +129,8 @@ lscpu
 ps aux
 ~~~
 
+The `printf` form requires a literal format and rejects `-v`, `%n`, and dynamic formats because they can mutate Shell state or change option interpretation.
+
 Network access belongs here, not in “outside the workspace.” The initial network profile is a literal HTTP(S) `curl` GET or HEAD request whose response goes to stdout. It accepts only `-f/--fail`, `-s/--silent`, `-S/--show-error`, `-L/--location`, `-I/--head`, `--compressed`, and numeric connect-timeout, maximum-time, retry, and retry-delay options:
 
 ~~~bash
@@ -153,7 +155,7 @@ A small set of conventional development workflows is approved in the third situa
 
 The initial target set is:
 
-- Node package scripts: `npm run ...`, `npm test`, `pnpm run ...`, `yarn run ...`, and `bun run ...`; require an unchanged `package.json`.
+- Node package scripts: `npm run ...`, `npm test`, `pnpm run ...`, `yarn run ...`, and `bun run ...`; require an unchanged `package.json` in the effective in-workspace cwd. Additional script arguments are accepted only after a literal `--`; alternate workspace, prefix, and cwd selectors require approval.
 - Go: `go build`, `go test`, `go vet`, `go fmt`, `go mod download`, and `go mod tidy`; require unchanged `go.mod` and, when present, `go.sum`.
 - Python packaging: read-only `pip list/show/check/freeze`, plus `pip install -r FILE` or `pip install .` only when the referenced requirements or project metadata files are committed and unchanged. The same rules apply to `python -m pip`.
 - Rust: conventional `cargo build/test/check/fmt/clippy`; require unchanged `Cargo.toml` and, when present, `Cargo.lock`.
@@ -183,7 +185,7 @@ Assigning one of these names requires user approval because it can change execut
 
 Commands, redirects, and nested executable nodes such as command substitutions become separate decision units when they are represented by the Bash AST. Before any approval, every execution- or I/O-relevant AST node must either be consumed by a supported rule or cause the complete Bash source to require user approval. Unsupported nodes are never silently ignored.
 
-The initial supported composition subset includes simple commands and redirects, ordinary pipelines, flat lists joined by newline, `;`, `&&`, or `||`, leading Bash assignments, one literal `cd DIR` transition followed by a supported command, and fully extracted command substitutions whose containing invocation remains recognized. For lists and pipelines, every syntactically present unit must allow; Sentinel does not predict which branch or process will run.
+The initial supported composition subset includes simple commands and redirects, ordinary pipelines, flat lists joined by newline, `;`, `&&`, or `||`, leading Bash assignments, one exact literal `cd DIR && COMMAND` transition, and fully extracted command substitutions whose containing invocation remains recognized. The derived cwd applies only to that right-hand command. A cwd transition across `;`, newline, `||`, or a pipeline, or inside command substitution, requires user approval. For other supported lists and pipelines, every syntactically present unit must allow; Sentinel does not predict which branch or process will run.
 
 `if`, loops, `case`, functions, background jobs, subshells, brace groups, process substitutions, dynamic cwd changes, and other structures requiring control-flow or shell-state analysis require user approval in the initial policy.
 

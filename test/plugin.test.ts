@@ -1,6 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { BashSentinelPlugin } from "../src/plugin"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
+import { execFileSync } from "node:child_process"
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs"
+import os from "node:os"
+import path from "node:path"
 
 type FetchMock = ReturnType<typeof vi.fn>
 
@@ -167,6 +177,44 @@ describe("bash gate", () => {
       await emit(hooks, askedEvent({ metadata: { command } }))
     }
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("resolves relative commands from directory rather than the worktree root", async () => {
+    const worktree = mkdtempSync(path.join(os.tmpdir(), "sentinel-cwd-"))
+    const directory = path.join(worktree, "sub")
+    mkdirSync(directory)
+    try {
+      writeFileSync(path.join(worktree, "check.sh"), "#!/bin/sh\ntrue\n")
+      writeFileSync(path.join(directory, "check.sh"), "#!/bin/sh\ntrue\n")
+      execFileSync("git", ["init", "-q", worktree])
+      execFileSync("git", ["-C", worktree, "add", "."])
+      execFileSync("git", [
+        "-C",
+        worktree,
+        "-c",
+        "user.name=Sentinel Test",
+        "-c",
+        "user.email=sentinel@example.invalid",
+        "commit",
+        "-qm",
+        "baseline",
+      ])
+      appendFileSync(path.join(directory, "check.sh"), "echo changed\n")
+
+      const legacyReply = vi.fn()
+      const hooks = await BashSentinelPlugin(
+        makeInput({
+          worktree,
+          directory,
+          client: { postSessionIdPermissionsPermissionId: legacyReply },
+        }),
+        undefined,
+      )
+      await emit(hooks, askedEvent({ metadata: { command: "./check.sh" } }))
+      expect(legacyReply).not.toHaveBeenCalled()
+    } finally {
+      rmSync(worktree, { recursive: true, force: true })
+    }
   })
 
   it("the removed upstream option can no longer disable fail-closed policy", async () => {

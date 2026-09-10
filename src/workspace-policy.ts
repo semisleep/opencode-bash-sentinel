@@ -14,6 +14,8 @@ export interface BaselineInspector {
 }
 export interface WorkspaceContext {
   readonly workspace: string;
+  /** Initial OpenCode session directory used to resolve relative paths. */
+  readonly cwd: string;
   readonly homedir: string;
   readonly baseline: BaselineInspector;
 }
@@ -253,6 +255,31 @@ const GIT_READ = new Set([
 ]);
 const GIT_ALL = new Set([...GIT_READ, "add", "commit", "fetch"]);
 
+const CONSUMED_NAMED_NODES = new Set([
+  "program",
+  "list",
+  "pipeline",
+  "redirected_statement",
+  "command",
+  "command_name",
+  "word",
+  "raw_string",
+  "ansi_c_string",
+  "string",
+  "string_content",
+  "concatenation",
+  "command_substitution",
+  "variable_assignment",
+  "variable_name",
+  "declaration_command",
+  "file_redirect",
+  "file_descriptor",
+  "number",
+  "simple_expansion",
+  "expansion",
+  "comment",
+]);
+
 export function analyzeWorkspacePolicy(
   source: string,
   ctx: WorkspaceContext,
@@ -264,6 +291,14 @@ export function analyzeWorkspacePolicy(
     const structural = validate(parsed.rootNode);
     if (structural) return denied(structural);
     const commands = collect(parsed.rootNode, "command");
+    if (
+      commands.some(
+        (n) =>
+          invocation(n)?.executable.literal === "cd" &&
+          ancestor(n, "command_substitution"),
+      )
+    )
+      return denied("unsupported nested cwd transition");
     const direct = commands.filter((n) => !ancestor(n, "command_substitution"));
     const cwdMap = cwds(direct, ctx);
     if (cwdMap.reason) return denied(cwdMap.reason);
@@ -271,15 +306,15 @@ export function analyzeWorkspacePolicy(
     for (const n of collect(parsed.rootNode, "variable_assignment").filter(
       (n) => !ancestor(n, "command") && !ancestor(n, "declaration_command"),
     ))
-      units.push(finish(assignment(n), ctx, ctx.workspace));
+      units.push(finish(assignment(n), ctx, ctx.cwd));
     for (const n of collect(parsed.rootNode, "declaration_command"))
-      units.push(finish(declaration(n), ctx, ctx.workspace));
+      units.push(finish(declaration(n), ctx, ctx.cwd));
     for (const n of commands) {
-      const cwd = cwdAt(n, cwdMap.map, ctx.workspace);
+      const cwd = cwdAt(n, cwdMap.map, ctx.cwd);
       units.push(finish(command(n, ctx, cwd), ctx, cwd));
     }
     for (const n of collect(parsed.rootNode, "file_redirect")) {
-      const cwd = cwdAt(n, cwdMap.map, ctx.workspace);
+      const cwd = cwdAt(n, cwdMap.map, ctx.cwd);
       units.push(finish(redirect(n), ctx, cwd));
     }
     const bad = units.find((u) => u.action === "ask");
@@ -292,6 +327,7 @@ export function analyzeWorkspacePolicy(
         reason: "mutation overlaps stability dependency",
         units,
       };
+    if (units.length === 0) return denied("no supported decision units");
     return { action: "allow", reason: "all decision units allow", units };
   } catch {
     return denied("policy engine failure");
@@ -306,10 +342,23 @@ function validate(root: SyntaxNode): string | undefined {
     const n = stack.pop()!;
     if (STRUCTURAL_DENY.has(n.type))
       return `unsupported Bash structure: ${n.type}`;
+    if (n.isNamed && !CONSUMED_NAMED_NODES.has(n.type))
+      return `unconsumed Bash node: ${n.type}`;
+    if (n.type === "arithmetic_expansion")
+      return "unsupported Bash expansion: arithmetic_expansion";
+    if (n.type === "simple_expansion" && !pureSimpleExpansion(n.text))
+      return "unsupported Bash expansion: simple_expansion";
+    if (n.type === "expansion" && !/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(n.text))
+      return "unsupported Bash expansion: expansion";
+    if (n.type === "word" && /(^|[^\\])[{}]/.test(n.text))
+      return "unsupported Bash expansion: brace expansion";
     if (!n.isNamed && (n.text === "&" || n.text === "|&"))
       return `unsupported Bash operator: ${n.text}`;
     stack.push(...n.children);
   }
+}
+function pureSimpleExpansion(text: string) {
+  return /^\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[?#$!@*_-])$/.test(text);
 }
 function collect(root: SyntaxNode, type: string) {
   const out: SyntaxNode[] = [],
@@ -349,6 +398,7 @@ function declaration(n: SyntaxNode): Seed {
     !!keyword &&
     ["export", "declare", "typeset", "readonly"].includes(keyword) &&
     vars.length > 0 &&
+    n.namedChildren.length === vars.length &&
     vars.every((v) => {
       const x = envName(v);
       return !!x && !risky(x);
@@ -438,7 +488,7 @@ function command(n: SyntaxNode, ctx: WorkspaceContext, cwd: string): Seed {
   if (INTERPRETERS.has(name) || name === "source" || name === ".")
     return interpreter(n, i, ctx, cwd, name);
   if (name === "echo" || name === "printf") {
-    const ok = !i.args.some((a) => a.literal?.startsWith("-v"));
+    const ok = name === "echo" ? true : safePrintf(i.args);
     return {
       kind: "command",
       text: n.text,
@@ -450,13 +500,14 @@ function command(n: SyntaxNode, ctx: WorkspaceContext, cwd: string): Seed {
   if (name === "curl") return curl(n, i);
   if (name === "git") return git(n, i, ctx, cwd);
   if (["npm", "pnpm", "yarn", "bun"].includes(name))
-    return nodeFlow(n, i, ctx, name);
-  if (name === "go") return goFlow(n, i, ctx);
+    return nodeFlow(n, i, ctx, cwd, name);
+  if (name === "go") return goFlow(n, i, ctx, cwd);
   if (name === "cargo")
     return workflow(
       n,
       i,
       ctx,
+      cwd,
       ["Cargo.toml", "?Cargo.lock"],
       new Set(["build", "test", "check", "fmt", "clippy"]),
       name,
@@ -479,6 +530,29 @@ function command(n: SyntaxNode, ctx: WorkspaceContext, cwd: string): Seed {
   return (
     pathCommand(n, i, name) ?? unsupported(n, `unsupported command: ${name}`)
   );
+}
+function safePrintf(args: Word[]) {
+  let index = 0;
+  if (args[0]?.literal === "--") index = 1;
+  const word = args[index],
+    format = word?.literal;
+  if (word?.raw.startsWith("$'")) return false;
+  if (format === undefined || format.startsWith("-v")) return false;
+  return !printfWritesVariable(format);
+}
+function printfWritesVariable(format: string) {
+  for (let i = 0; i < format.length; i++) {
+    if (format[i] !== "%") continue;
+    if (format[i + 1] === "%") {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < format.length && /[-+ #0'0-9.*]/.test(format[j]!)) j++;
+    if (format[j] === "n") return true;
+    i = j;
+  }
+  return false;
 }
 function interpreter(
   n: SyntaxNode,
@@ -736,34 +810,50 @@ function nodeFlow(
   n: SyntaxNode,
   i: Invocation,
   ctx: WorkspaceContext,
+  cwd: string,
   name: string,
 ): Seed {
-  const a = i.args.map((x) => x.literal),
-    ok =
-      a.every((x) => x !== undefined) &&
-      (name === "npm"
-        ? a[0] === "test" || (a[0] === "run" && !!a[1])
-        : a[0] === "run" && !!a[1]);
-  return deps(n, ctx, ["package.json"], ok, `${name} workflow`);
+  const a = i.args.map((x) => x.literal);
+  let ok =
+    withinWorkspace(cwd, ctx.workspace) &&
+    a.every((x) => x !== undefined) &&
+    (name === "npm"
+      ? a[0] === "test" ||
+        (a[0] === "run" && !!a[1] && !a[1]!.startsWith("-"))
+      : a[0] === "run" && !!a[1] && !a[1]!.startsWith("-"));
+  if (ok) ok = validNodeWorkflowTail(a as string[], name);
+  return deps(n, ctx, cwd, ["package.json"], ok, `${name} workflow`);
+}
+function validNodeWorkflowTail(args: string[], name: string) {
+  const start = name === "npm" && args[0] === "test" ? 1 : 2;
+  const tail = args.slice(start);
+  return tail.length === 0 || tail[0] === "--";
 }
 function workflow(
   n: SyntaxNode,
   i: Invocation,
   ctx: WorkspaceContext,
+  cwd: string,
   files: string[],
   subs: Set<string>,
   name: string,
 ): Seed {
   const a = i.args.map((x) => x.literal);
   const ok =
+    withinWorkspace(cwd, ctx.workspace) &&
     a.every((x) => x !== undefined) &&
     subs.has(a[0] ?? "") &&
     (a.slice(1) as string[]).every(
       (x) => !x.startsWith("-") || /^-[vx]$/.test(x),
     );
-  return deps(n, ctx, files, ok, `${name} workflow`);
+  return deps(n, ctx, cwd, files, ok, `${name} workflow`);
 }
-function goFlow(n: SyntaxNode, i: Invocation, ctx: WorkspaceContext): Seed {
+function goFlow(
+  n: SyntaxNode,
+  i: Invocation,
+  ctx: WorkspaceContext,
+  cwd: string,
+): Seed {
   const a = i.args.map((x) => x.literal);
   let ok = a.every((x) => x !== undefined);
   const v = a as string[];
@@ -772,8 +862,14 @@ function goFlow(n: SyntaxNode, i: Invocation, ctx: WorkspaceContext): Seed {
   else
     ok &&=
       ["build", "test", "vet", "fmt"].includes(v[0] ?? "") &&
-      v.slice(1).every((x) => !x.startsWith("-") || /^-[vx]$/.test(x));
-  return deps(n, ctx, ["go.mod", "?go.sum"], ok, "go workflow");
+      v.slice(1).every(
+        (x) =>
+          (!x.startsWith("-") || /^-[vx]$/.test(x)) &&
+          (!looksPath(x) ||
+            withinWorkspace(resolve(x, ctx, cwd) ?? "", ctx.workspace)),
+      );
+  ok &&= withinWorkspace(cwd, ctx.workspace);
+  return deps(n, ctx, cwd, ["go.mod", "?go.sum"], ok, "go workflow");
 }
 function pip(
   n: SyntaxNode,
@@ -801,9 +897,15 @@ function pip(
   }
   if (v.join(" ") === "install .") {
     const fs = ["pyproject.toml", "setup.cfg", "setup.py"]
-      .map((x) => path.join(ctx.workspace, x))
+      .map((x) => path.join(cwd, x))
       .filter((x) => ctx.baseline.status(x) !== "absent");
-    return depsAbs(n, ctx, fs, fs.length > 0, "pip local install");
+    return depsAbs(
+      n,
+      ctx,
+      fs,
+      withinWorkspace(cwd, ctx.workspace) && fs.length > 0,
+      "pip local install",
+    );
   }
   return unsupported(n, "unsupported pip");
 }
@@ -844,6 +946,7 @@ function make(
 function deps(
   n: SyntaxNode,
   ctx: WorkspaceContext,
+  cwd: string,
   files: string[],
   shape: boolean,
   reason: string,
@@ -852,7 +955,7 @@ function deps(
   let ok = shape;
   for (const item of files) {
     const optional = item[0] === "?",
-      f = path.join(ctx.workspace, optional ? item.slice(1) : item),
+      f = path.join(cwd, optional ? item.slice(1) : item),
       s = ctx.baseline.status(f);
     if (optional && s === "absent") continue;
     absolute.push(f);
@@ -1179,14 +1282,35 @@ function cwds(commands: SyntaxNode[], ctx: WorkspaceContext) {
   const map = new Map<number, string>(),
     cds = commands.filter((n) => invocation(n)?.executable.literal === "cd");
   if (!cds.length) return { map };
+  if (cds.length === 1 && commands.length === 1) return { map };
   if (cds.length !== 1 || commands.length !== 2 || commands[0] !== cds[0])
     return { map, reason: "unsupported cwd transition structure" };
-  const i = invocation(cds[0]!),
+  const cd = cds[0]!,
+    nextCommand = commands[1]!,
+    left = decisionContainer(cd),
+    right = decisionContainer(nextCommand),
+    list = left.parent;
+  if (
+    !list ||
+    list.type !== "list" ||
+    right.parent !== list ||
+    list.namedChildren.length !== 2 ||
+    list.namedChildren[0] !== left ||
+    list.namedChildren[1] !== right ||
+    !list.children.some((n) => !n.isNamed && n.text === "&&")
+  )
+    return { map, reason: "unsupported cwd transition operator" };
+  const i = invocation(cd),
     raw = i?.args.length === 1 ? i.args[0]?.literal : undefined,
-    next = raw && resolve(raw, ctx, ctx.workspace);
+    next = raw && resolve(raw, ctx, ctx.cwd);
   if (!next) return { map, reason: "dynamic cwd transition" };
-  map.set(commands[1]!.startIndex, next);
+  map.set(nextCommand.startIndex, next);
   return { map };
+}
+function decisionContainer(command: SyntaxNode): SyntaxNode {
+  return command.parent?.type === "redirected_statement"
+    ? command.parent
+    : command;
 }
 function cwdAt(n: SyntaxNode, map: Map<number, string>, fallback: string) {
   let out = fallback,
@@ -1227,10 +1351,14 @@ function same(a: string, b: string) {
 function overlap(a: string, b: string) {
   return withinWorkspace(a, b) || withinWorkspace(b, a);
 }
-export function defaultWorkspaceContext(workspace: string): WorkspaceContext {
+export function defaultWorkspaceContext(
+  workspace: string,
+  cwd: string = workspace,
+): WorkspaceContext {
   const root = path.normalize(workspace);
   return {
     workspace: root,
+    cwd: path.normalize(cwd),
     homedir: os.homedir(),
     baseline: new GitBaseline(root),
   };

@@ -125,7 +125,7 @@ Only exact, explicitly reviewed command-and-option profiles are allowed.
 
 The following names and option sets are an extensible **CURRENT PROFILE** registry. The situation-3 exact-match requirement is architectural.
 
-The initial informational family covers bounded ordinary forms of `date`, `uname`, `uptime`, `whoami`, `id`, `free`, `vm_stat`, `nproc`, `lscpu`, and `ps`, plus plain stdout-only `echo` and `printf` forms. Each implementation profile must enumerate accepted flags; an unknown flag returns unsupported. In particular, the `printf` profile must reject assignment forms such as `printf -v`.
+The initial informational family covers bounded ordinary forms of `date`, `uname`, `uptime`, `whoami`, `id`, `free`, `vm_stat`, `nproc`, `lscpu`, and `ps`, plus plain stdout-only `echo` and `printf` forms. Each implementation profile must enumerate accepted flags; an unknown flag returns unsupported. In particular, the `printf` profile requires a literal format and rejects assignment forms such as `printf -v` and the `%n` conversion.
 
 Network commands belong here, not in situation 2. The initial network family contains `curl` only:
 
@@ -179,7 +179,7 @@ A finite set of conventional development workflows is allowed only when:
 
 Initial target profiles:
 
-- **Node scripts:** `npm run ...`, `npm test`, `pnpm run ...`, `yarn run ...`, and `bun run ...`. Require the effective workspace's `package.json` to be committed and unchanged. Alternate prefix/workspace selectors ask initially.
+- **Node scripts:** `npm run ...`, `npm test`, `pnpm run ...`, `yarn run ...`, and `bun run ...`. Require the effective cwd's in-workspace `package.json` to be committed and unchanged. Additional script arguments are supported only after a literal `--`; alternate prefix/workspace/cwd selectors ask initially.
 - **Go:** `go build`, `go test`, `go vet`, `go fmt`, `go mod download`, and `go mod tidy`. Require `go.mod` and, when present, `go.sum` to be committed and unchanged. Explicit output or directory paths are still classified normally.
 - **Python/pip information:** `pip list`, `pip show`, `pip check`, and `pip freeze`, including `python -m pip` equivalents. These exact informational profiles need no project control file.
 - **Python/pip installation:** `pip install -r FILE` requires that requirements file to be committed and unchanged. `pip install .` requires every present packaging control file among `pyproject.toml`, `setup.cfg`, and `setup.py` to be committed and unchanged, with at least one present in `HEAD`. The same rules apply to `python -m pip`.
@@ -284,10 +284,12 @@ Normalize only the structures the policy deliberately supports:
 - ordinary pipelines;
 - flat command lists joined by newline, `;`, `&&`, or `||`;
 - leading Bash assignments;
-- one literal `cd DIR` transition followed by a supported command;
+- one exact literal `cd DIR && COMMAND` transition, with the derived cwd applied only to that right-hand command;
 - fully extracted command substitutions whose containing invocation remains completely recognized.
 
 Do not normalize wrapper arguments or embedded strings into commands. Unsupported wrappers, nested payloads, dynamic cwd, `if`, loops, `case`, functions, background jobs, subshells, brace groups, process substitutions, and other complex control flow make the complete source unsupported and produce an ask decision.
+
+Do not propagate cwd across `;`, newline, `||`, or pipelines. A `cd` inside command substitution is unsupported initially. Keep the OpenCode worktree root and session directory as separate inputs: the former is the containment and Git-baseline boundary, while the latter is the initial cwd for relative paths.
 
 Normalization must report whether it consumed every execution- or I/O-relevant AST node. An unconsumed relevant node makes the complete source unsupported even when all extracted units would independently allow. New parser node types therefore fail closed until normalization explicitly handles or rejects them.
 
@@ -401,6 +403,8 @@ Required groups:
 - unknown commands and unsupported or indeterminate forms → ask;
 - parser failure/budget exhaustion → ask;
 - commands and redirects from different situations compose, and every decision unit must allow;
+- relative paths use the OpenCode session directory while containment and Git baselines use the worktree root;
+- only exact `cd DIR && COMMAND` propagates cwd; `;`, newline, `||`, pipelines, and nested command-substitution transitions ask;
 - any unconsumed execution- or I/O-relevant AST node → ask;
 - command substitutions and other supported nested executable nodes become independent decision units;
 - unsupported executable expansions, heredocs, here-strings, process substitutions, and redirect forms → ask;
@@ -416,6 +420,7 @@ Required groups:
 - committed-script dependencies are not recursively inspected;
 - a committed and unchanged `source`/`.` file is allowed even when another command follows; its Shell-state effects are not modeled;
 - supported Node, Go, pip, Cargo, and Make workflows with committed unchanged control files → allow;
+- workflow control files are selected from the effective cwd; external cwd and alternate workspace/root selectors → ask;
 - the same workflows with missing, staged, unstaged, untracked, or ambiguous required control files → ask;
 - unlisted subcommands of an otherwise recognized development tool → ask;
 - inside-workspace edits allow, while `.git`, external, and unresolved edit paths ask;

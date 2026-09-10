@@ -4,6 +4,7 @@ import type { WorkspaceContext } from "../src/workspace-policy";
 
 const ctx: WorkspaceContext = {
   workspace: "/work/project",
+  cwd: "/work/project",
   homedir: "/home/dev",
   baseline: { status: () => "clean" },
 };

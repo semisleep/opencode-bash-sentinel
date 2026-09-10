@@ -13,9 +13,11 @@ import {
 const root = "/work/project";
 function context(
   overrides: Record<string, BaselineStatus> = {},
+  cwd: string = root,
 ): WorkspaceContext {
   return {
     workspace: root,
+    cwd,
     homedir: "/home/dev",
     baseline: {
       status(file) {
@@ -27,11 +29,18 @@ function context(
 const decision = (
   source: string,
   overrides: Record<string, BaselineStatus> = {},
-) => analyzeWorkspacePolicy(source, context(overrides));
-const allow = (source: string, overrides?: Record<string, BaselineStatus>) =>
-  expect(decision(source, overrides).action, source).toBe("allow");
-const ask = (source: string, overrides?: Record<string, BaselineStatus>) =>
-  expect(decision(source, overrides).action, source).toBe("ask");
+  cwd: string = root,
+) => analyzeWorkspacePolicy(source, context(overrides, cwd));
+const allow = (
+  source: string,
+  overrides?: Record<string, BaselineStatus>,
+  cwd?: string,
+) => expect(decision(source, overrides, cwd).action, source).toBe("allow");
+const ask = (
+  source: string,
+  overrides?: Record<string, BaselineStatus>,
+  cwd?: string,
+) => expect(decision(source, overrides, cwd).action, source).toBe("ask");
 
 describe("architecture contract", () => {
   it("fails closed for parse errors, unsupported structure, wrappers and unknown commands", () => {
@@ -58,6 +67,26 @@ describe("architecture contract", () => {
     allow("cat README.md | rg Goal");
     allow("CI=1 echo $(date) > result.txt");
     ask("echo $(unknown)");
+  });
+  it("requires complete consumption of expansions and at least one decision unit", () => {
+    allow("echo $VALUE");
+    allow("echo ${VALUE}");
+    allow("printf '%s' \"$VALUE\"");
+    allow("printf '%s' \"$(date)\"");
+    ask("");
+    ask("   # comment only");
+    ask("echo $((x=1))");
+    ask("echo ${VALUE:=changed}");
+    ask("echo ${VALUE:-default}");
+    ask("echo item{1,2}");
+  });
+  it("keeps printf shell-state mutations outside the stdout profile", () => {
+    ask("printf -v PATH /tmp");
+    ask("printf '%n' PATH");
+    ask("printf $'\\x25n' PATH");
+    ask("printf $'\\x2dv' PATH /tmp");
+    ask("OPTION=-v; printf $OPTION PATH /tmp; git status");
+    ask("printf \"$FORMAT\" value");
   });
   it("requires every unit to allow", () => {
     ask("date && unknown");
@@ -199,11 +228,50 @@ describe("situation 3 profiles", () => {
     ask("cargo check", { "Cargo.toml": "dirty" });
     ask("pip install requests");
   });
+  it("checks workflow control files in the effective cwd", () => {
+    const sub = path.join(root, "packages/app");
+    allow(
+      "npm run build",
+      { "package.json": "dirty", "packages/app/package.json": "clean" },
+      sub,
+    );
+    ask(
+      "npm run build",
+      { "package.json": "clean", "packages/app/package.json": "dirty" },
+      sub,
+    );
+    allow("cd packages/app && npm run build", {
+      "package.json": "dirty",
+      "packages/app/package.json": "clean",
+    });
+    allow("cd packages/app && pip install .", {
+      "packages/app/pyproject.toml": "clean",
+      "packages/app/setup.cfg": "absent",
+      "packages/app/setup.py": "absent",
+    });
+    ask("cd /tmp && npm run build");
+    ask("cd /tmp && go test ./...");
+    ask("cd /tmp && cargo check");
+    ask("cd /tmp && pip install .");
+  });
+  it("rejects unreviewed workflow directory selectors and path escapes", () => {
+    allow("npm run build -- --watch");
+    allow("npm test -- --runInBand");
+    ask("npm run build --watch");
+    ask("npm run --workspace /tmp/pkg test");
+    ask("npm test --workspace /tmp/pkg");
+    ask("pnpm run --dir /tmp/pkg test");
+    ask("yarn run --cwd /tmp/pkg test");
+    ask("go test ../outside");
+    ask("go test /tmp/outside");
+  });
   it("allows ordinary assignments but rejects the short high-risk set", () => {
     allow("CI=1 npm test");
     allow("NODE_ENV=test echo ok");
     allow("export FOO=bar");
     allow("A=1");
+    ask("export FOO=bar OTHER");
+    ask("declare FOO=bar -x");
     ask("PATH=/tmp echo ok");
     ask("DYLD_INSERT_LIBRARIES=x echo ok");
     ask("export HOME=/tmp");
@@ -211,12 +279,32 @@ describe("situation 3 profiles", () => {
 });
 
 describe("cwd and redirects", () => {
-  it("supports one literal cd transition only", () => {
+  it("propagates cwd only through one exact literal cd && command structure", () => {
     allow("cd /tmp && cat hosts");
     ask("cd /tmp && rm x");
     allow("cd sub && echo x > out");
+    allow("cd sub && rm -rf .");
+    ask("cd sub | rm -rf .");
+    ask("cd missing || rm -rf .");
+    ask("cd missing; rm -rf .");
+    ask("cd sub\nrm -rf .");
     ask("cd a; cd b; ls");
     ask("cd $DIR && ls");
+    ask('echo "$(cd sub && date)"');
+  });
+  it("resolves relative paths from cwd while retaining the workspace boundary", () => {
+    allow("rm -rf .", {}, path.join(root, "sub"));
+    ask("rm -rf ..", {}, path.join(root, "sub"));
+    allow(
+      "./scripts/check",
+      { "sub/scripts/check": "clean" },
+      path.join(root, "sub"),
+    );
+    ask(
+      "./scripts/check",
+      { "sub/scripts/check": "dirty" },
+      path.join(root, "sub"),
+    );
   });
   it("classifies redirect variants", () => {
     allow("cat < /etc/hosts");
