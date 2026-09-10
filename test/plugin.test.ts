@@ -150,7 +150,6 @@ describe("bash gate", () => {
       "find . -fprint /tmp/out",
       "rsync src/ dest/ --log-file=/tmp/log",
       "/tmp/ls -la",
-      "FOO=bar echo ok",
       "python -W ignore /tmp/evil.py",
       "install -d /tmp/external local-dir",
       "printf -v PATH /tmp; ls",
@@ -162,12 +161,12 @@ describe("bash gate", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("retains the documented workspace-script and developer-tool trust boundaries", async () => {
+  it("does not approve scripts or workflows when their Git baseline cannot be verified", async () => {
     const hooks = await makePlugin()
     for (const command of ["npm test", "make test", "python script.py", "bash scripts/build.sh", "./scripts/check"] ) {
       await emit(hooks, askedEvent({ metadata: { command } }))
     }
-    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("the removed upstream option can no longer disable fail-closed policy", async () => {
@@ -249,13 +248,13 @@ describe("external_directory gate", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it("still approves modeled external reads with internal writes", async () => {
+  it("uses the whole-unit outside classification for mixed read/write commands", async () => {
     const hooks = await makePlugin()
     await emit(
       hooks,
       askedEvent({ permission: "external_directory", metadata: { command: "cp /etc/hosts local-copy" } }),
     )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it("the removed upstream option cannot bypass this gate", async () => {
@@ -338,7 +337,7 @@ describe("audit log", () => {
       expect.objectContaining({ gate: "bash", command: "git status", verdict: "safe", action: "approve" }),
     )
     expect(lines).toContainEqual(
-      expect.objectContaining({ gate: "bash", command: "rm -rf /tmp/x", verdict: "dangerous", action: "escalate" }),
+      expect.objectContaining({ gate: "bash", command: "rm -rf /tmp/x", verdict: "unanalyzable", action: "escalate" }),
     )
     await fs.rm(logPath)
   })

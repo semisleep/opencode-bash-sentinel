@@ -6,16 +6,7 @@ An ordinary command/profile change may update the finite sets in this document b
 
 ## 1. Migration status
 
-This document defines the target policy for the next implementation revision. The current source still implements the earlier design:
-
-- a ported Kimi dangerous-command analyzer;
-- a separate positive executable-trust pass;
-- command-specific workspace/external-effect modeling;
-- final composition through several cross-cutting confidence flags.
-
-That implementation remains the runtime behavior until it is replaced. Documentation was intentionally updated first so the product contract can be reviewed before code changes begin.
-
-The migration must not be presented as complete until the three-situation contract is implemented and its tests pass.
+The three-situation architecture is now the runtime implementation. The Kimi dangerous-command analyzer, separate executable-trust pass, cross-cutting confidence flags, wrapper recursion, and command-specific aggregation overrides have been removed. New command coverage must extend the finite recognizer/profile registries without weakening the architectural contract.
 
 ## 2. Product objective
 
@@ -336,53 +327,28 @@ The adapter must not contain command semantics.
 
 ## 5. Kimi provenance and divergence
 
-The parser and current `src/analyzer.ts` originated in Moonshot AI's Kimi Code CLI:
+The Bash parser originated in Moonshot AI's Kimi Code CLI. The formerly ported dangerous-command analyzer has been removed:
 
 | Upstream | Commit | Local use |
 |---|---|---|
-| Kimi Code | `f88ed6d45bcf5ea358c173af7a3568b57ba9bd38` | Bash parser; historical/current-transition analyzer |
+| Kimi Code | `f88ed6d45bcf5ea358c173af7a3568b57ba9bd38` | Bash parser |
 | OpenCode | `ecbc6ccac85b3e8087b6445e584318419b9e2b34` (`dev`) | Integration reference; e2e-tested with release 1.18.29 |
 
-Sentinel's policy has diverged from Kimi. Kimi's dangerous-command policy is not a target-policy authority and should not be composed into the final decision model after migration. Catastrophic commands do not require a separate exhaustive blacklist: unless a command matches an allowable supported profile, it asks.
+Sentinel's policy has diverged from Kimi. Kimi's dangerous-command policy is not a policy authority and is not composed into the final decision model. Catastrophic commands do not require a separate exhaustive blacklist: unless a command matches an allowable supported profile, it asks.
 
 The parser may continue to be refreshed from Kimi with attribution and compatibility review. Do not automatically reapply analyzer behavior or policy changes from upstream.
 
 Ported paths:
 
 - `packages/tree-sitter-bash/src/` → `src/parser/`
-- `packages/agent-core-v2/src/agent/permissionPolicy/policies/dangerous-command-ask.ts` → current transitional `src/analyzer.ts`
 
-MIT attribution in [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md) remains mandatory even if the analyzer is later removed.
+MIT attribution in [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md) remains mandatory for the parser.
 
-## 6. Current implementation gap
+## 6. Implementation status
 
-The present `src/workspace-policy.ts` combines:
+`src/workspace-policy.ts` owns the bounded parse, structural validation, decision-unit extraction, finite recognizers, situation rules, red lines, Git-baseline dependencies, and order-independent stability aggregation. `src/policy-engine.ts` is the single gate-facing entry point. The `bash` and `external_directory` adapters call that same entry point; `edit` remains separate.
 
-- executable allowlists;
-- external-effect confidence;
-- write-target extraction;
-- interpreter option grammars;
-- wrapper and cwd state;
-- command-specific escape detection;
-- workspace red lines.
-
-`src/policy-engine.ts` then composes that result with the Kimi analyzer and a special `rm -rf` override. This architecture reflects the superseded goal of positively classifying every executable and should be replaced rather than incrementally extended.
-
-Behavior known to differ from the target includes:
-
-- workspace scripts are currently trusted based on lexical location, without the `HEAD`/dirty check;
-- the current policy has a broad finite development-tool allowlist rather than only the newly agreed explicit exceptions;
-- Kimi dangerous verdicts still participate in final decisions;
-- current interpreter and command-option analysis is substantially broader than the intended supported subset;
-- current wrappers and embedded shell payloads are recursively analyzed, while the target policy treats them as unsupported whole invocations;
-- current environment-assignment behavior does not match the target short high-risk-name exception;
-- Git is currently partly classified through workspace paths instead of exclusively through situation-3 profiles;
-- current normalization does not expose and enforce the target full-consumption invariant for every execution- or I/O-relevant AST node;
-- current aggregation does not detect overlaps between mutation scopes and stability dependencies;
-- current redirect handling does not implement the target's complete redirect-form and Bash-special-path policy;
-- current workspace-root restrictions include metadata operations beyond direct root destruction.
-
-This list is a migration guide, not an authorization to change code before the target documentation is approved.
+The current registry intentionally covers fewer flags and subcommands than the tools themselves provide. An unsupported but harmless invocation asking the user is expected and should be widened only through a documented, tested profile extension.
 
 ## 7. Verified OpenCode integration facts
 
@@ -411,22 +377,9 @@ The recommended configuration routes Bash and edit requests through the approval
 }
 ```
 
-## 8. Migration plan
+## 8. Extension workflow
 
-1. Approve this product contract and resolve any remaining scope ambiguity.
-2. Add target-policy tests before deleting old behavior.
-3. Introduce an explicit decision-unit/fact/situation model, full-AST-consumption result, and small finite recognizer registries.
-4. Implement situation 1: finite path recognizers, the three red lines, and Git-backed workspace-script classification.
-5. Implement situation 2: the finite external-read profiles and external-write escalation.
-6. Implement situation 3: informational, curl, Git, and unsupported/indeterminate profiles.
-7. Add the finite Node, Go, pip, Cargo, and Make workflow profiles with Git-clean control-file checks.
-8. Add Bash-assignment handling, the high-risk variable-name set, complete redirect handling, bounded literal `cd`, and source aggregation with stability-conflict detection.
-9. Remove Kimi analyzer composition and obsolete confidence flags.
-10. Delete superseded tests and update README status only after runtime behavior matches.
-
-Avoid preserving old edge-case behavior merely because a regression test exists. Tests derived from the superseded policy should be deliberately reviewed against this contract.
-
-Implementation must also add a distinct architecture-contract test suite covering the invariants listed in [ARCHITECTURE.md](ARCHITECTURE.md), separate from the evolving command-profile cases below.
+Add frequently encountered command forms through complete recognizers and adjacent allow/ask tests. Keep structural and aggregation contract tests separate from evolving profile cases. If a request changes decision-unit boundaries, facts, situations, red lines, or aggregation, stop and use the architecture-decision process instead of hiding the change in a command profile.
 
 ## 9. Test strategy
 
@@ -492,7 +445,7 @@ These should remain limitations unless the product goal is explicitly changed. T
 
 ## 11. License
 
-This project is MIT licensed. The Kimi-derived parser and analyzer code require preserved attribution:
+This project is MIT licensed. The Kimi-derived parser requires preserved attribution:
 
 ```text
 Portions Copyright (c) 2026 Moonshot AI, Inc.

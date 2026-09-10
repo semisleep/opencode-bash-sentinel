@@ -1,7 +1,7 @@
 {
   "name": "opencode-bash-sentinel",
   "version": "0.1.0",
-  "description": "AST-based bash command gate for OpenCode — auto-approves positively trusted commands and escalates unknown, dangerous, or un-analyzable ones. Engine ported from MoonshotAI/kimi-code (MIT).",
+  "description": "Fail-closed AST-based Bash permission helper for OpenCode with workspace, external-path, and exact-profile policies.",
   "license": "MIT",
   "type": "module",
   "exports": {

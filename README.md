@@ -6,7 +6,7 @@ An AST-based Bash permission helper for [OpenCode](https://opencode.ai). It sile
 
 ## Status
 
-The policy documented below is the target for the next implementation revision. The current source still contains the earlier positive-trust policy and Kimi dangerous-command composition. Until migration is complete, do not assume every target-policy example matches the released behavior.
+The runtime implements the three-situation, positive-recognition policy documented below. The earlier Kimi dangerous-command composition and cross-cutting trust flags have been removed from the decision path.
 
 ## Goal
 
@@ -296,11 +296,11 @@ These entries route requests through OpenCode's approval flow. Sentinel replies 
 
 ## Provenance
 
-The Bash parser and current transitional dangerous-command analyzer were adapted from Moonshot AI's open-source [Kimi Code](https://github.com/MoonshotAI/kimi-code) CLI under MIT. Sentinel's policy has since diverged: Kimi's dangerous-command policy is not the design authority for the target implementation.
+The Bash parser was adapted from Moonshot AI's open-source [Kimi Code](https://github.com/MoonshotAI/kimi-code) CLI under MIT. The formerly ported dangerous-command analyzer has been removed; Sentinel's policy is independent.
 
 | Upstream | Commit | Use |
 |---|---|---|
-| Kimi Code | `f88ed6d45bcf5ea358c173af7a3568b57ba9bd38` | Parser source; historical analyzer source |
+| Kimi Code | `f88ed6d45bcf5ea358c173af7a3568b57ba9bd38` | Parser source |
 | OpenCode | `ecbc6ccac85b3e8087b6445e584318419b9e2b34` (`dev`); e2e-tested on 1.18.29 | Integration contract |
 
 ## License

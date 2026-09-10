@@ -1,2 +1,2 @@
-export { BashSentinelPlugin, analyzeCommandString } from "./src/index"
+export { BashSentinelPlugin, analyzeCommandPolicy, analyzeCommandString, analyzeWorkspacePolicy, defaultWorkspaceContext } from "./src/index"
 export { default } from "./src/index"

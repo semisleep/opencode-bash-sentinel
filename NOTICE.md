@@ -16,18 +16,14 @@ Ported files and their upstream paths:
 | `src/parser/parse.ts` | `packages/tree-sitter-bash/src/parse.ts` |
 | `src/parser/budget.ts` | `packages/tree-sitter-bash/src/budget.ts` |
 | `src/parser/index.ts` | `packages/tree-sitter-bash/src/index.ts` |
-| `src/analyzer.ts` | `packages/agent-core-v2/src/agent/permissionPolicy/policies/dangerous-command-ask.ts` |
 
 `src/workspace-policy.ts`, `src/plugin.ts`, and `index.ts` are original to this
 project (the workspace read/write path policy, the permission-reply glue, and
 the edit/external gates); they contain no upstream code.
 
-Adaptations: the `#/*` import alias was rewritten to relative imports; the
-analyzer's DI decorators and policy-chain/config dependencies were removed and
-replaced with a direct call into the bundled parser, and its shared helpers
-(`literalText`, `normalizeCommandName`, wrapper unwrapping, command collection)
-are re-exported for the workspace policy. All upstream analysis constants and
-heuristics are kept verbatim.
+Adaptations: the `#/*` import alias was rewritten to relative imports. The
+project's policy engine is original code and does not compose the former Kimi
+dangerous-command analyzer; only the attributed Bash parser remains.
 
 The OpenCode plugin integration (`src/plugin.ts`) was written for this project
 and verified against opencode commit `ecbc6ccac85b3e8087b6445e584318419b9e2b34`

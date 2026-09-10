@@ -1,8 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import os from "node:os"
 import path from "node:path"
-import type { DangerousVerdict } from "./analyzer"
-import { analyzeCommandPolicy, type PolicyDecision, type PolicyGate } from "./policy-engine"
+import { analyzeCommandPolicy, type DangerousVerdict, type PolicyDecision, type PolicyGate } from "./policy-engine"
 import { defaultWorkspaceContext, hasGitSegment, withinWorkspace } from "./workspace-policy"
 
 export interface BashSentinelOptions {

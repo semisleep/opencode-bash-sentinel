@@ -1,57 +1,42 @@
 import {
-  analyzeParsedSource,
-  parseSource,
-  type DangerousVerdict,
-} from './analyzer'
-import {
-  analyzeWorkspaceParsed,
+  analyzeWorkspacePolicy,
+  defaultWorkspaceContext,
   type WorkspaceContext,
-} from './workspace-policy'
+} from "./workspace-policy";
 
-export type PolicyGate = 'bash' | 'external_directory'
-
-export interface PolicyEngineOptions {
-  readonly gate?: PolicyGate
-}
-
+export type PolicyGate = "bash" | "external_directory";
+export type DangerousVerdict =
+  | { readonly kind: "dangerous"; readonly command: string }
+  | { readonly kind: "unanalyzable" };
 export type PolicyDecision =
-  | { readonly action: 'allow' }
-  | { readonly action: 'ask'; readonly verdict: DangerousVerdict; readonly reason: string }
+  | { readonly action: "allow" }
+  | {
+      readonly action: "ask";
+      readonly verdict: DangerousVerdict;
+      readonly reason: string;
+    };
 
-/**
- * Single entry point for command decisions. The source is parsed once and the
- * same syntax tree is shared by the upstream and workspace policies.
- */
+/** Both OpenCode command gates deliberately use this exact same pipeline. */
 export function analyzeCommandPolicy(
   source: string,
   ctx: WorkspaceContext,
-  options: PolicyEngineOptions = {},
+  _options: { readonly gate?: PolicyGate } = {},
 ): PolicyDecision {
-  try {
-    const parsed = parseSource(source)
-    const upstream = analyzeParsedSource(parsed, 0, parseSource)
-    const workspace = analyzeWorkspaceParsed(parsed, ctx)
-    if (workspace.verdict !== undefined) {
-      return { action: 'ask', verdict: workspace.verdict, reason: 'workspace policy' }
-    }
-    if (options.gate === 'external_directory' && !workspace.externalEffectsModeled) {
-      return {
-        action: 'ask',
-        verdict: { kind: 'unanalyzable' },
-        reason: 'external-directory effects are not fully modeled',
-      }
-    }
-    if (workspace.suppressUpstreamRmRf && upstream?.kind === 'dangerous' && upstream.command === 'rm -rf') {
-      return workspace.commandTrusted
-        ? { action: 'allow' }
-        : { action: 'ask', verdict: { kind: 'unanalyzable' }, reason: 'command is not positively trusted' }
-    }
-    if (upstream !== undefined) return { action: 'ask', verdict: upstream, reason: 'upstream dangerous-command policy' }
-    if (!workspace.commandTrusted) {
-      return { action: 'ask', verdict: { kind: 'unanalyzable' }, reason: 'command is not positively trusted' }
-    }
-    return { action: 'allow' }
-  } catch {
-    return { action: 'ask', verdict: { kind: 'unanalyzable' }, reason: 'policy engine failure' }
-  }
+  const result = analyzeWorkspacePolicy(source, ctx);
+  return result.action === "allow"
+    ? { action: "allow" }
+    : {
+        action: "ask",
+        verdict: { kind: "unanalyzable" },
+        reason: result.reason,
+      };
+}
+
+/** Compatibility API; the plugin should always pass OpenCode's explicit workspace instead. */
+export function analyzeCommandString(
+  source: string,
+  ctx: WorkspaceContext = defaultWorkspaceContext(process.cwd()),
+): DangerousVerdict | undefined {
+  const decision = analyzeCommandPolicy(source, ctx);
+  return decision.action === "allow" ? undefined : decision.verdict;
 }
