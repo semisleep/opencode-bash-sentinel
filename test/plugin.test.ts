@@ -347,6 +347,13 @@ describe("edit gate", () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it("does not treat glob patterns as concrete edit paths", async () => {
+    const hooks = await makePlugin()
+    await emit(hooks, askedEvent({ permission: "edit", patterns: ["**"], metadata: {} }))
+    await emit(hooks, askedEvent({ permission: "edit", patterns: ["{src,.git}/**"], metadata: {} }))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it("the removed upstream option cannot bypass this gate", async () => {
     const hooks = await makePlugin({ upstream: true })
     await emit(

@@ -16,6 +16,8 @@ describe("git profile", () => {
     ask("git -c alias.x='!evil' x");
     ask("git -C /tmp/repo add file");
     ask("git diff --ext-diff");
+    ask("git add --max-count=1 file");
+    ask("git show --untracked-files=all");
     ask("git grep --open-files-in-pager=less pattern");
     ask("git fetch 'ext::sh -c touch% /tmp/out'");
     ask("git fetch helper::payload");

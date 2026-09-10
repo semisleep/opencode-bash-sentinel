@@ -16,6 +16,9 @@ describe("workspace script profile", () => {
     allow("python tools/check.py");
     allow("source scripts/env.sh");
     ask("./scripts/check /tmp/input");
+    ask("./scripts/check --output=/tmp/result");
+    ask("./scripts/check -o/tmp/result");
+    allow("./scripts/check --output=build/result");
     ask("./scripts/check $TARGET");
     ask('python -c "print(1)"');
     ask("bash /tmp/x.sh");
@@ -50,6 +53,53 @@ describe("workspace script profile", () => {
         analyzeWorkspacePolicy("./check.sh", defaultWorkspaceContext(directory))
           .action,
       ).toBe("ask");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not let a later commit advance the session trust baseline", () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "sentinel-session-"));
+    try {
+      writeFileSync(path.join(directory, "check.sh"), "#!/bin/sh\ntrue\n");
+      const magicPath = path.join(directory, ":!check.sh");
+      writeFileSync(magicPath, "#!/bin/sh\ntrue\n");
+      execFileSync("git", ["init", "-q", directory]);
+      execFileSync("git", ["-C", directory, "add", "--all"]);
+      const commit = (message: string) =>
+        execFileSync("git", [
+          "-C",
+          directory,
+          "-c",
+          "user.name=Sentinel Test",
+          "-c",
+          "user.email=sentinel@example.invalid",
+          "commit",
+          "-qm",
+          message,
+        ]);
+      commit("baseline");
+      const sessionContext = defaultWorkspaceContext(directory);
+      writeFileSync(magicPath, "#!/bin/sh\necho changed\n");
+      expect(sessionContext.baseline.status(magicPath)).toBe("dirty");
+      const original = "#!/bin/sh\ntrue\n";
+      const changed = `${original}echo changed\n`;
+      writeFileSync(path.join(directory, "check.sh"), changed);
+      execFileSync("git", ["-C", directory, "add", "check.sh"]);
+      writeFileSync(path.join(directory, "check.sh"), original);
+      expect(analyzeWorkspacePolicy("./check.sh", sessionContext).action).toBe(
+        "ask",
+      );
+      writeFileSync(path.join(directory, "check.sh"), changed);
+      commit("changed during session");
+
+      expect(analyzeWorkspacePolicy("./check.sh", sessionContext).action).toBe(
+        "ask",
+      );
+      expect(
+        analyzeWorkspacePolicy("./check.sh", defaultWorkspaceContext(directory))
+          .action,
+      ).toBe("allow");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

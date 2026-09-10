@@ -145,9 +145,8 @@ function validArguments(subcommand: string, args: string[]) {
       !argument.startsWith("-") ||
       allowed.has(argument) ||
       ((subcommand === "log" || subcommand === "show") &&
-        /^-\d+$/.test(argument)) ||
-      argument.startsWith("--max-count=") ||
-      argument.startsWith("--untracked-files="),
+        (/^-\d+$/.test(argument) || argument.startsWith("--max-count="))) ||
+      (subcommand === "status" && argument.startsWith("--untracked-files=")),
   );
 }
 

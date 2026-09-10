@@ -13,5 +13,7 @@ describe("sed profile", () => {
     ask("sed '1e touch /tmp/out' README.md");
     ask("sed 's/a/b/w /tmp/out' README.md");
     ask("sed -i '1d' README.md");
+    ask("sed -i.bak 's/a/b/' README.md");
+    ask("sed --in-place=.bak 's/a/b/' README.md");
   });
 });

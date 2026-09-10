@@ -157,8 +157,10 @@ export function literal(node: SyntaxNode): string | undefined {
     return /[$`*?[\]{}()]/.test(node.text)
       ? undefined
       : node.text.replaceAll(/\\(.)/gs, "$1");
-  if (node.type === "raw_string" || node.type === "ansi_c_string")
-    return node.text.slice(1, -1);
+  if (node.type === "raw_string") return node.text.slice(1, -1);
+  // Bash decodes ANSI-C escapes after parsing. Treating their source spelling
+  // as the runtime value can hide path traversal, .git, or option prefixes.
+  if (node.type === "ansi_c_string") return;
   if (node.type === "string" || node.type === "concatenation") {
     let value = "";
     for (const child of node.children) {

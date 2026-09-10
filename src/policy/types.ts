@@ -19,7 +19,7 @@ export interface WorkspaceContext {
 export interface DecisionUnit {
   readonly kind: "command" | "redirect" | "assignment";
   readonly text: string;
-  readonly situation?: Situation;
+  readonly situation: Situation;
   readonly action: "allow" | "ask";
   readonly reason: string;
   readonly mutationScopes: readonly string[];
@@ -37,15 +37,24 @@ export type Effect = {
   path: string;
 };
 
-export type UnitSeed = {
+type SeedBase = {
   kind: DecisionUnit["kind"];
   text: string;
-  effects?: Effect[];
-  situation?: Situation;
-  allowed?: boolean;
   reason: string;
   dependencies?: string[];
 };
+
+export type UnitSeed =
+  | (SeedBase & {
+      effects: [Effect, ...Effect[]];
+      situation?: never;
+      allowed?: boolean;
+    })
+  | (SeedBase & {
+      effects?: never;
+      situation: "workspace-neutral-or-indeterminate";
+      allowed: boolean;
+    });
 
 export type Word = { raw: string; literal?: string };
 

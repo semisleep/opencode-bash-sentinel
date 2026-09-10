@@ -20,7 +20,7 @@ Recognized operations whose relevant paths are all inside the workspace are allo
 
 1. Directly deleting, removing, or moving away the workspace root requires approval.
 2. Directly modifying `.git` through ordinary filesystem operations requires approval.
-3. A workspace script requires approval unless its entry file is committed, unchanged from `HEAD`, and has no visibly external or ambiguous path argument.
+3. A workspace script requires approval unless its entry file matches the Git baseline captured when Sentinel starts, remains unchanged in the index and worktree, and has no visibly external or ambiguous path argument.
 
 Examples that normally allow:
 
@@ -39,7 +39,7 @@ echo broken > .git/config
 ./scripts/modified-check
 ```
 
-The last example asks when that entry file is modified, untracked, or otherwise cannot be verified against `HEAD`.
+The last example asks when that entry file is modified, untracked, committed only after Sentinel started, or otherwise cannot be verified against the captured baseline.
 
 ### Outside the workspace
 

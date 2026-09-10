@@ -11,7 +11,7 @@ src/parser/                    bounded Bash syntax service
 src/policy/normalize.ts        supported structure, full AST coverage, cwd facts
 src/policy/types.ts            decision units and shared fact types
 src/policy/paths.ts            lexical path resolution and containment
-src/policy/baseline.ts         committed-and-unchanged baseline inspection
+src/policy/baseline.ts         session-fixed committed-and-unchanged baseline
 src/policy/redirect.ts         redirect recognition
 src/policy/profiles/           complete command-specific recognizers
 src/policy/analyze.ts          situation rules and source aggregation

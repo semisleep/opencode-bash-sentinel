@@ -2,6 +2,7 @@ import type { SyntaxNode } from "../../parser/node";
 import type { Invocation, UnitSeed, WorkspaceContext } from "../types";
 import { recognizeCargoWorkflow } from "./cargo";
 import { recognizeCurl } from "./curl";
+import { recognizeDd } from "./dd";
 import { isRiskyEnvironmentName } from "./environment";
 import { recognizeFilesystem } from "./filesystem";
 import { recognizeGit } from "./git";
@@ -13,6 +14,8 @@ import { NODE_WORKFLOW_NAMES, recognizeNodeWorkflow } from "./node";
 import { recognizePip } from "./pip";
 import { recognizeEcho, recognizePrintf } from "./printf";
 import { recognizeSed } from "./sed";
+import { recognizeSearch, SEARCH_NAMES } from "./search";
+import { recognizeUniq } from "./uniq";
 import {
   INTERPRETER_NAMES,
   recognizeInterpreter,
@@ -69,6 +72,9 @@ export function recognizeCommand(
   if (informationNames.has(name))
     return recognizeInformation(node, invocation, ctx, cwd, name);
   if (name === "sed") return recognizeSed(node, invocation);
+  if (name === "uniq") return recognizeUniq(node, invocation);
+  if (name === "dd") return recognizeDd(node, invocation);
+  if (SEARCH_NAMES.has(name)) return recognizeSearch(node, invocation, name);
   return (
     recognizeFilesystem(node, invocation, name) ??
     unsupported(node, `unsupported command: ${name}`)

@@ -19,15 +19,12 @@ export function recognizeSed(
   const values = args as string[];
   for (let index = 0; index < values.length; index++) {
     const value = values[index]!;
-    if (
-      value === "-i" ||
-      value === "--in-place" ||
-      value.startsWith("-i") ||
-      value.startsWith("--in-place=")
-    ) {
+    if (value === "-i" || value === "--in-place") {
       writesInPlace = true;
       continue;
     }
+    if (value.startsWith("-i") || value.startsWith("--in-place="))
+      return unsupported(node, "sed backup suffix");
     if (value === "-e" || value === "--expression") {
       explicitExpressions = true;
       const program = values[++index];

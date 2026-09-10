@@ -13,13 +13,14 @@ export const recognizeMakeWorkflow: CommandProfile = (
   if (args.some((argument) => argument === undefined))
     return unsupported(node, "dynamic make");
   const values = args as string[];
-  let selected: string | undefined;
+  const selected: string[] = [];
   let shape = true;
   for (let index = 0; index < values.length; index++) {
     const argument = values[index]!;
     if (argument === "-f" || argument === "--file") {
-      selected = values[++index];
-      if (!selected) shape = false;
+      const file = values[++index];
+      if (!file || file === "-") shape = false;
+      else selected.push(file);
       continue;
     }
     if (/^-j\d+$/.test(argument) || /^--jobs=\d+$/.test(argument)) continue;
@@ -29,12 +30,20 @@ export const recognizeMakeWorkflow: CommandProfile = (
     }
     if (argument.startsWith("-") || argument.includes("=")) shape = false;
   }
-  let file = selected && resolvePath(selected, ctx, cwd);
-  if (!file)
-    file = ["GNUmakefile", "Makefile"]
+  let files = selected.map((file) => resolvePath(file, ctx, cwd));
+  if (files.length === 0) {
+    const defaultFile = ["GNUmakefile", "Makefile"]
       .map((name) => path.join(cwd, name))
       .find((candidate) => ctx.baseline.status(candidate) !== "absent");
-  if (!file || !withinWorkspace(file, ctx.workspace))
+    files = [defaultFile];
+  }
+  if (files.some((file) => !file || !withinWorkspace(file, ctx.workspace)))
     return unsupported(node, "missing or external Makefile");
-  return absoluteDependencies(node, ctx, [file], shape, "make workflow");
+  return absoluteDependencies(
+    node,
+    ctx,
+    [...new Set(files as string[])],
+    shape,
+    "make workflow",
+  );
 };

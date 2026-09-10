@@ -46,15 +46,7 @@ export function recognizeScript(
   const inside = withinWorkspace(file, ctx.workspace);
   const badArgument = invocation.args
     .slice(argumentStart)
-    .some(
-      (argument) =>
-        argument.literal === undefined ||
-        (looksLikePath(argument.literal) &&
-          !withinWorkspace(
-            resolvePath(argument.literal, ctx, cwd) ?? "",
-            ctx.workspace,
-          )),
-    );
+    .some((argument) => unsafeVisibleArgument(argument.literal, ctx, cwd));
   const allowed =
     inside && ctx.baseline.status(file) === "clean" && !badArgument;
   return {
@@ -67,4 +59,23 @@ export function recognizeScript(
       : "workspace script red line or external script",
     dependencies: inside ? [file] : [],
   };
+}
+
+function unsafeVisibleArgument(
+  argument: string | undefined,
+  ctx: WorkspaceContext,
+  cwd: string,
+) {
+  if (argument === undefined) return true;
+  const equals = argument.indexOf("=");
+  if (equals > 0) {
+    const value = argument.slice(equals + 1);
+    if (looksLikePath(value))
+      return !withinWorkspace(resolvePath(value, ctx, cwd) ?? "", ctx.workspace);
+  }
+  if (argument.startsWith("-") && argument.includes("/")) return true;
+  return (
+    looksLikePath(argument) &&
+    !withinWorkspace(resolvePath(argument, ctx, cwd) ?? "", ctx.workspace)
+  );
 }

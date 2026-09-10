@@ -1,11 +1,22 @@
 import { normalizeBash, invocation } from "./normalize";
-import { hasGitSegment, pathsOverlap, resolvePath, samePath, withinWorkspace } from "./paths";
-import { recognizeDeclaration, recognizeAssignment } from "./profiles/environment";
+import {
+  hasGitSegment,
+  pathsOverlap,
+  resolvePath,
+  samePath,
+  withinWorkspace,
+} from "./paths";
+import {
+  recognizeAssignment,
+  recognizeDeclaration,
+} from "./profiles/environment";
 import { recognizeCommand } from "./profiles/registry";
 import { recognizeRedirect } from "./redirect";
 import type {
   DecisionUnit,
+  Effect,
   PolicyResult,
+  Situation,
   UnitSeed,
   WorkspaceContext,
 } from "./types";
@@ -37,9 +48,7 @@ export function analyzeWorkspacePolicy(
     const rejected = units.find((unit) => unit.action === "ask");
     if (rejected) return { action: "ask", reason: rejected.reason, units };
     const mutations = units.flatMap((unit) => unit.mutationScopes);
-    const dependencies = units.flatMap(
-      (unit) => unit.stabilityDependencies,
-    );
+    const dependencies = units.flatMap((unit) => unit.stabilityDependencies);
     if (
       mutations.some((mutation) =>
         dependencies.some((dependency) => pathsOverlap(mutation, dependency)),
@@ -66,13 +75,19 @@ function finalize(
   ctx: WorkspaceContext,
   cwd: string,
 ): DecisionUnit {
-  const effects = seed.effects ?? [];
+  const effects: readonly Effect[] = seed.effects ?? [];
   const resolved = effects.map((effect) => ({
     effect,
     path: resolvePath(effect.path, ctx, cwd),
   }));
-  let situation = seed.situation;
-  if (!situation)
+  let situation: Situation | undefined = seed.situation;
+  let allowed = seed.allowed ?? true;
+  let reason = seed.reason;
+  if (!situation && effects.length === 0) {
+    situation = "workspace-neutral-or-indeterminate";
+    allowed = false;
+    reason = "missing classification facts";
+  } else if (!situation)
     situation = resolved.some((item) => !item.path)
       ? "workspace-neutral-or-indeterminate"
       : resolved.some(
@@ -80,9 +95,6 @@ function finalize(
           )
         ? "workspace-outside"
         : "workspace-inside";
-
-  let allowed = seed.allowed ?? true;
-  let reason = seed.reason;
   if (situation === "workspace-outside") {
     allowed &&=
       effects.length > 0 && effects.every((effect) => effect.kind === "read");

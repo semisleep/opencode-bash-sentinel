@@ -29,7 +29,7 @@ The following are accepted trust boundaries:
 
 - workspace containment is lexical; symlink-canonical containment is not modeled;
 - ambient `PATH` is not resolved to establish executable identity;
-- a committed and unchanged workspace entry script is trusted without recursively inspecting its imports, configuration, generated inputs, or effects;
+- a workspace entry script is trusted only when its content matches the Git commit captured when the Sentinel context was created and remains unchanged in the index and worktree; later commits do not advance that baseline;
 - a recognized development workflow trusts only its direct declared control files, not hooks, transitive commands, build graphs, or runtime effects;
 - an approved `source` file may alter later shell interpretation; shell state is not simulated;
 - arbitrary environment semantics, network side effects, tool configuration, and concurrent changes between analysis and execution are not modeled.
@@ -70,7 +70,7 @@ Every decision unit has one normalization-time **effective cwd**. How that direc
 
 1. The default is the OpenCode-provided session cwd. The workspace root is a separate containment boundary and must not replace it.
 2. Only the exact supported form `cd LITERAL_DIR && COMMAND` assigns the resolved directory to the right-hand command unit and any redirect units attached to that command.
-3. That derived cwd is scoped to the right-hand command expression. It is not propagated across `;`, newline, `||`, pipelines, nested command substitutions, sibling commands, or subsequent commands.
+3. That derived cwd is scoped to the complete right-hand command expression, including nested decision units such as command substitutions. It is not propagated across `;`, newline, `||`, pipelines, sibling commands, or subsequent commands. A new `cd` inside a command substitution remains unsupported.
 4. A dynamic or structurally unsupported cwd transition makes the complete source unsupported. Profiles must not implement their own cwd propagation.
 
 After normalization assigns the effective cwd, the selected complete-invocation recognizer identifies that unit's **classification targets**. Relative targets resolve from the unit's effective cwd; absolute paths remain absolute; `~` uses the supplied home directory; dynamic or otherwise unresolved targets remain unresolved. Resolution is lexical and does not canonicalize symlinks.
@@ -114,6 +114,8 @@ Apply exactly three red lines:
 Every other recognized workspace operation allows. No profile can override a red line.
 
 For a direct script, only its entry path selects the situation. Argument screening belongs to the script red line and does not create a generic path-guessing layer.
+
+The committed-and-unchanged baseline is fixed when the policy context is created. A commit made later in the same OpenCode session cannot establish trust for a changed script or workflow control file.
 
 ### 2. Clearly outside the workspace
 

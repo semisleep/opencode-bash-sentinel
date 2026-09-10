@@ -18,7 +18,6 @@ const READERS = new Set([
   "cmp",
   "cut",
   "strings",
-  "uniq",
 ]);
 
 const SHORT_OPTIONS: Record<string, string> = {
@@ -37,7 +36,6 @@ const SHORT_OPTIONS: Record<string, string> = {
   cmp: "blnsi",
   cut: "bcdDfnsz",
   strings: "adelnstTx",
-  uniq: "cdfisuwz",
   rm: "dfiIrRv",
   rmdir: "pv",
   mkdir: "mpv",
@@ -47,9 +45,9 @@ const SHORT_OPTIONS: Record<string, string> = {
   tee: "ai",
   chmod: "cfRv",
   chown: "cfhRv",
-  cp: "abdfHilLnPrRsSuvx",
-  mv: "bfinSuv",
-  ln: "bdfinPrsSv",
+  cp: "adfHilLnPrRuvx",
+  mv: "finuv",
+  ln: "dfinPrsv",
 };
 
 const LONG_OPTIONS: Record<string, Set<string>> = {
@@ -141,9 +139,22 @@ export function recognizeFilesystem(
   if (args.some((argument) => argument === undefined))
     return unsupported(node, `dynamic ${name}`);
   const values = args as string[];
-  if (READERS.has(name)) return pathEffects(node, operands(values, name), "read", name);
-  if (["rm", "rmdir"].includes(name))
+  if (READERS.has(name))
+    return pathEffects(node, operands(values, name), "read", name);
+  if (["rm", "rmdir"].includes(name)) {
+    if (
+      name === "rmdir" &&
+      values.some(
+        (value) =>
+          value === "--parents" ||
+          (value.startsWith("-") &&
+            !value.startsWith("--") &&
+            value.includes("p")),
+      )
+    )
+      return unsupported(node, "rmdir parent removal");
     return pathEffects(node, operands(values, name), "delete", name);
+  }
   if (["mkdir", "touch", "truncate", "shred", "tee"].includes(name))
     return pathEffects(node, operands(values, name), "write", name);
   if (["chmod", "chown"].includes(name)) {
@@ -159,17 +170,19 @@ export function recognizeFilesystem(
     const items = operands(values, name);
     if (!items || items.length < 2)
       return unsupported(node, `unsupported ${name}`);
+    const sourceEffects = items.slice(0, -1).map(
+      (item) =>
+        ({
+          kind: name === "mv" ? "move-source" : "read",
+          path: item,
+        }) as Effect,
+    );
     return {
       kind: "command",
       text: node.text,
       effects: [
-        ...items.slice(0, -1).map(
-          (item) =>
-            ({
-              kind: name === "mv" ? "move-source" : "read",
-              path: item,
-            }) as Effect,
-        ),
+        sourceEffects[0]!,
+        ...sourceEffects.slice(1),
         {
           kind: name === "mv" ? "move-destination" : "write",
           path: items.at(-1)!,
@@ -178,25 +191,7 @@ export function recognizeFilesystem(
       reason: name,
     };
   }
-  if (["rg", "ripgrep", "grep"].includes(name))
-    return recognizeSearch(node, values, name);
-  if (name === "dd") return recognizeDd(node, values);
   return;
-}
-
-function recognizeDd(node: SyntaxNode, args: string[]): UnitSeed {
-  const effects: Effect[] = [];
-  for (const argument of args) {
-    if (argument.startsWith("if="))
-      effects.push({ kind: "read", path: argument.slice(3) });
-    else if (argument.startsWith("of="))
-      effects.push({ kind: "write", path: argument.slice(3) });
-    else if (!/^[a-z_]+=[^=]+$/i.test(argument))
-      return unsupported(node, "unsupported dd");
-  }
-  return effects.length
-    ? { kind: "command", text: node.text, effects, reason: "dd" }
-    : unsupported(node, "dd without path");
 }
 
 function operands(args: string[], name: string): string[] | undefined {
@@ -224,62 +219,6 @@ function operands(args: string[], name: string): string[] | undefined {
   return output;
 }
 
-function recognizeSearch(
-  node: SyntaxNode,
-  args: string[],
-  name: string,
-): UnitSeed {
-  const paths: string[] = [];
-  let hasPattern = false;
-  for (let index = 0; index < args.length; index++) {
-    const value = args[index]!;
-    if (value === "--") {
-      if (!hasPattern) {
-        if (!args[index + 1])
-          return unsupported(node, `missing ${name} pattern`);
-        hasPattern = true;
-        index++;
-      }
-      paths.push(...args.slice(index + 1));
-      break;
-    }
-    if (!hasPattern && value.startsWith("-")) {
-      if (["-e", "--regexp", "-g", "--glob", "-t", "--type"].includes(value)) {
-        if (!args[++index])
-          return unsupported(node, `missing ${name} option value`);
-        if (value === "-e" || value === "--regexp") hasPattern = true;
-        continue;
-      }
-      if (
-        !/^-[nHhIiSsUvVwcClLo]+$/.test(value) &&
-        ![
-          "--hidden",
-          "--follow",
-          "--files",
-          "--count",
-          "--line-number",
-          "--no-heading",
-          "--fixed-strings",
-        ].includes(value)
-      )
-        return unsupported(node, `unsupported ${name} option`);
-      continue;
-    }
-    if (!hasPattern) hasPattern = true;
-    else paths.push(value);
-  }
-  if (!hasPattern) return unsupported(node, `missing ${name} pattern`);
-  return paths.length
-    ? pathEffects(node, paths, "read", name)
-    : {
-        kind: "command",
-        text: node.text,
-        situation: "workspace-neutral-or-indeterminate",
-        allowed: true,
-        reason: `${name} cwd search`,
-      };
-}
-
 export function pathEffects(
   node: SyntaxNode,
   operands: string[] | undefined,
@@ -298,7 +237,7 @@ export function pathEffects(
   return {
     kind: "command",
     text: node.text,
-    effects: operands.map((path) => ({ kind, path })),
+    effects: operands.map((path) => ({ kind, path })) as [Effect, ...Effect[]],
     reason,
   };
 }

@@ -31,4 +31,9 @@ describe("cwd normalization", () => {
       path.join(root, "sub"),
     );
   });
+
+  it("applies the right-hand cwd to nested decision units", () => {
+    allow("cd /tmp && echo $(cat file)");
+    ask("cd /tmp && echo $(rm file)");
+  });
 });
