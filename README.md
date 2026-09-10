@@ -107,6 +107,8 @@ sed -i 's/a/b/' /etc/hosts
 
 The external-read set is intentionally finite. Unsupported options, embedded execution such as `find -exec`, and commands whose effects are unclear remain with the user instead of growing into a complete command-language analyzer.
 
+The current `sed` profile accepts only one or more substitution expressions such as `s/old/new/g`, with the documented simple options. Addressed commands, multiple-command programs, and `e`, `w`, or other unmodeled sed operations require approval; Sentinel does not attempt to interpret the complete sed language.
+
 ### 3. No workspace relationship, or cannot determine it
 
 This situation covers both:
@@ -137,7 +139,7 @@ Network access belongs here, not in “outside the workspace.” The initial net
 curl -fsSL https://example.com/data
 ~~~
 
-Upload, explicit mutation, remote execution, credential-bearing or dynamic requests, file-producing options, and unsupported network options require user approval:
+Upload, explicit mutation, remote execution, credential-bearing or dynamic requests, URL globbing, file-producing options, and unsupported network options require user approval:
 
 ~~~bash
 curl -X POST https://example.com/action
@@ -168,6 +170,8 @@ Additional ecosystems and subcommands should be added only as explicit, document
 #### Git profiles
 
 All Git invocations belong to the third situation, including path-free commands executed from the OpenCode cwd. The initial profile approves `status`, `diff`, `log`, `show`, `blame`, `rev-parse`, `ls-files`, `grep`, `add`, `commit`, and `fetch` in their supported ordinary forms.
+
+The `fetch` profile accepts configured remote names, ordinary local/scp-like locations, and the explicit `http`, `https`, `ssh`, `git`, and `file` URL schemes, followed by simple literal refspecs. Visible remote-helper forms containing `::`, unknown URL schemes, whitespace-bearing remote operands, unsupported options, and complex refspecs require approval. Git configuration may still map an ordinary configured remote name to behavior Sentinel does not inspect; that remains part of the documented ambient Git trust boundary.
 
 `git -C DIR` remains in the third situation, but `DIR` is a profile constraint: an external directory permits only the read-only subset, while a dynamic or unresolved directory requires user approval. `--git-dir`, `--work-tree`, unknown global options, `push`, `pull`, `reset`, `clean`, `checkout`, `switch`, `restore`, credential/configuration mutation, and other unlisted subcommands require user approval.
 

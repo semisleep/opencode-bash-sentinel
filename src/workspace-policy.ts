@@ -656,7 +656,7 @@ function curl(n: SyntaxNode, i: Invocation): Seed {
       if (!v || !/^\d+(\.\d+)?$/.test(v)) ok = false;
       continue;
     }
-    if (a.startsWith("-") || url || !/^https?:\/\//i.test(a)) {
+    if (a.startsWith("-") || url || !safeCurlUrl(a)) {
       ok = false;
       break;
     }
@@ -670,6 +670,20 @@ function curl(n: SyntaxNode, i: Invocation): Seed {
     allowed: ok,
     reason: ok ? "curl GET/HEAD profile" : "unsupported curl",
   };
+}
+function safeCurlUrl(value: string) {
+  if (/[[\]{}\r\n]/.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      parsed.username === "" &&
+      parsed.password === "" &&
+      parsed.hostname !== ""
+    );
+  } catch {
+    return false;
+  }
 }
 function git(
   n: SyntaxNode,
@@ -702,6 +716,7 @@ function git(
 }
 function gitArgs(sub: string, a: string[]) {
   if (sub === "commit") return commitArgs(a);
+  if (sub === "fetch") return fetchArgs(a);
   const flags: Record<string, Set<string>> = {
     status: new Set([
       "--short",
@@ -774,7 +789,6 @@ function gitArgs(sub: string, a: string[]) {
       "--fixed-strings",
     ]),
     add: new Set(["-A", "-u", "--all", "--update", "--intent-to-add"]),
-    fetch: new Set(["--all", "--prune", "--tags", "--quiet", "--verbose"]),
   };
   const allowed = flags[sub];
   if (!allowed) return false;
@@ -786,6 +800,29 @@ function gitArgs(sub: string, a: string[]) {
       v.startsWith("--max-count=") ||
       v.startsWith("--untracked-files="),
   );
+}
+function fetchArgs(args: string[]) {
+  const flags = new Set(["--all", "--prune", "--tags", "--quiet", "--verbose"]);
+  const operands: string[] = [];
+  for (const arg of args) {
+    if (arg.startsWith("-")) {
+      if (!flags.has(arg)) return false;
+    } else operands.push(arg);
+  }
+  if (args.includes("--all") && operands.length > 0) return false;
+  if (operands.length === 0) return true;
+  if (!safeFetchRemote(operands[0]!)) return false;
+  return operands.slice(1).every(safeFetchRefspec);
+}
+function safeFetchRemote(remote: string) {
+  if (!remote || /[\s\0]/.test(remote) || remote.includes("::")) return false;
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(remote)?.[1];
+  if (scheme && !["http", "https", "ssh", "git", "file"].includes(scheme.toLowerCase()))
+    return false;
+  return !remote.startsWith("-");
+}
+function safeFetchRefspec(refspec: string) {
+  return /^\+?[A-Za-z0-9._/-]+(?::[A-Za-z0-9._/-]*)?$/.test(refspec);
 }
 function commitArgs(a: string[]) {
   for (let x = 0; x < a.length; x++) {
@@ -1111,8 +1148,9 @@ function search(n: SyntaxNode, a: string[], name: string): Seed {
 }
 function sed(n: SyntaxNode, a: string[]): Seed {
   let write = false,
-    program: string | undefined;
-  const files: string[] = [];
+    explicitExpressions = false;
+  const programs: string[] = [],
+    files: string[] = [];
   for (let x = 0; x < a.length; x++) {
     const v = a[x]!;
     if (
@@ -1125,23 +1163,20 @@ function sed(n: SyntaxNode, a: string[]): Seed {
       continue;
     }
     if (v === "-e" || v === "--expression") {
-      program = a[++x];
+      explicitExpressions = true;
+      const program = a[++x];
       if (!program) return unsupported(n, "missing sed expression");
+      programs.push(program);
       continue;
     }
     if (["-n", "-E", "-r"].includes(v)) continue;
     if (v.startsWith("-")) return unsupported(n, "unsupported sed option");
-    if (!program) program = v;
+    if (!explicitExpressions && programs.length === 0) programs.push(v);
     else files.push(v);
   }
-  if (!program) return unsupported(n, "missing sed program");
-  if (
-    /(?:^|[;}\n])\s*[eEwW](?:\s|$)|s(.).*?\1.*?\1[a-zA-Z]*[ewW]/.test(program)
-  )
-    return unsupported(
-      n,
-      "sed program has unmodeled execution or write effect",
-    );
+  if (programs.length === 0) return unsupported(n, "missing sed program");
+  if (!programs.every(safeSedSubstitution))
+    return unsupported(n, "unsupported sed program");
   return files.length
     ? paths(n, files, write ? "write" : "read", "sed")
     : {
@@ -1151,6 +1186,27 @@ function sed(n: SyntaxNode, a: string[]): Seed {
         allowed: true,
         reason: "sed stdin",
       };
+}
+function safeSedSubstitution(program: string) {
+  if (program.length < 4 || program[0] !== "s") return false;
+  const delimiter = program[1]!;
+  if (/\\|\r|\n|[A-Za-z0-9\s]/.test(delimiter)) return false;
+  const patternEnd = sedSectionEnd(program, 2, delimiter);
+  if (patternEnd < 0) return false;
+  const replacementEnd = sedSectionEnd(program, patternEnd + 1, delimiter);
+  if (replacementEnd < 0) return false;
+  const flags = program.slice(replacementEnd + 1);
+  return flags === "" || /^(?:[gIpM]|[0-9])+$/.test(flags);
+}
+function sedSectionEnd(program: string, start: number, delimiter: string) {
+  for (let x = start; x < program.length; x++) {
+    if (program[x] === "\\") {
+      x++;
+      continue;
+    }
+    if (program[x] === delimiter) return x;
+  }
+  return -1;
 }
 function paths(
   n: SyntaxNode,
@@ -1203,6 +1259,14 @@ function redirect(n: SyntaxNode): Seed {
       allowed: false,
       reason: "dynamic redirect",
     };
+  if (specialRedirectPath(v))
+    return {
+      kind: "redirect",
+      text: n.text,
+      situation: "workspace-neutral-or-indeterminate",
+      allowed: false,
+      reason: "special Bash redirect path",
+    };
   if (v === "/dev/null")
     return {
       kind: "redirect",
@@ -1226,6 +1290,12 @@ function redirect(n: SyntaxNode): Seed {
     effects: [{ kind: write ? "write" : "read", path: v }],
     reason: "file redirect",
   };
+}
+function specialRedirectPath(value: string) {
+  const normalized = path.posix.normalize(value.replaceAll("\\", "/"));
+  return ["/dev/tcp", "/dev/udp", "/dev/fd", "/proc/self/fd"].some(
+    (root) => normalized === root || normalized.startsWith(`${root}/`),
+  );
 }
 function finish(s: Seed, ctx: WorkspaceContext, cwd: string): DecisionUnit {
   const effects = s.effects ?? [],

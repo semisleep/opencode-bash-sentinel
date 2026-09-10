@@ -108,6 +108,8 @@ External-read support is a finite set of common command profiles. Each profile s
 
 The identities and exact option sets of those external-read profiles form part of the current extensible registry. The situation-2 rule itself does not.
 
+The current `sed` recognizer accepts only one or more complete substitution expressions with simple `-n`, `-E`/`-r`, `-e`/`--expression`, and in-place forms. Its substitution flags are limited to numeric occurrence selectors and `g`, `I`, `p`, or `M`. Addressed commands, multi-command programs, and every other sed operation—including visible `e` or `w` effects—are unsupported rather than heuristically scanned.
+
 There is no requirement to support every read-only utility or every safe option. An unrecognized but harmless read asks.
 
 If one recognized command has both workspace and external filesystem targets, classify the whole command unit as situation 2. Do not split sources and destinations merely to recover additional allow cases: for example, both `cp /tmp/input .` and `mv /tmp/input .` may conservatively require user approval when no exact situation-2 profile accepts them.
@@ -134,7 +136,7 @@ Network commands belong here, not in situation 2. The initial network family con
 - stdout output only;
 - combinable `-f/--fail`, `-s/--silent`, `-S/--show-error`, `-L/--location`, `--compressed`, and numeric `--connect-timeout`, `--max-time`, `--retry`, and `--retry-delay`.
 
-Upload, explicit remote mutation, remote execution, credential/cookie/header/body options, dynamic URLs, curl file-output options, non-HTTP(S) schemes, multiple URLs, and unknown options ask. Bash redirects remain separate decision units. Curl's `.curlrc`, proxy environment, DNS, and other ambient state are not inspected; this is an explicit trust boundary.
+Upload, explicit remote mutation, remote execution, credential/cookie/header/body options, URL userinfo, URL globbing, dynamic URLs, curl file-output options, non-HTTP(S) schemes, multiple URLs, and unknown options ask. Bash redirects remain separate decision units. Curl's `.curlrc`, proxy environment, DNS, and other ambient state are not inspected; this is an explicit trust boundary.
 
 Parser failure, parser-budget exhaustion, dynamic command names, unresolved relevant targets, unsupported wrappers, and structures beyond the supported subset are indeterminate and ask.
 
@@ -147,6 +149,8 @@ The exact subcommand and option sets below are extensible **CURRENT PROFILES**. 
 Every Git invocation belongs to situation 3, even when it has path operands or starts from the OpenCode workspace. This deliberately avoids inferring repository scope from ambient cwd.
 
 The initial ordinary-form allow set is `status`, `diff`, `log`, `show`, `blame`, `rev-parse`, `ls-files`, `grep`, `add`, `commit`, and `fetch`. Each subcommand profile accepts only an enumerated flag/operand shape.
+
+The `fetch` operand profile accepts configured remote names, ordinary local/scp-like locations, and explicit `http`, `https`, `ssh`, `git`, or `file` URLs, followed by simple literal refspecs. Visible remote-helper syntax containing `::`, unknown URL schemes, whitespace-bearing operands, complex refspecs, and unsupported options ask. The contents of an ordinary configured remote remain ambient Git configuration and are not inspected.
 
 `git -C DIR` remains situation 3 but adds a constraint. A literal workspace directory may use the normal set; a literal external directory may use only `status`, `diff`, `log`, `show`, `blame`, `rev-parse`, `ls-files`, and `grep`. Dynamic `-C`, `--git-dir`, `--work-tree`, and unknown global options ask.
 
@@ -393,13 +397,14 @@ Required groups:
 - direct workspace-root deletion/removal/move-away → ask;
 - direct filesystem writes to `.git` → ask;
 - the exact Git allow set, including constrained `-C` and `fetch` → allow;
-- Git remote mutation, destructive/unlisted subcommands, alternate repository options, and unknown flags → ask;
+- Git remote mutation, destructive/unlisted subcommands, alternate repository options, visible remote-helper fetch operands, unknown URL schemes, and unknown flags → ask;
 - finite external reads → allow;
+- finite substitution-only sed forms → allow; addressed, execution, write-command, and other unmodeled sed programs → ask;
 - external writes → ask;
 - mixed inside/outside commands without an exact situation-2 allow profile → ask;
 - recognized system-information profiles with no workspace relationship → allow;
 - narrowly approved network forms → allow;
-- uploads, remote mutation/execution, dynamic network requests, and unsupported network options → ask;
+- uploads, remote mutation/execution, URL userinfo/globbing, dynamic network requests, and unsupported network options → ask;
 - unknown commands and unsupported or indeterminate forms → ask;
 - parser failure/budget exhaustion → ask;
 - commands and redirects from different situations compose, and every decision unit must allow;

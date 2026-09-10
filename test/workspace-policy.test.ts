@@ -118,6 +118,7 @@ describe("three situations and workspace red lines", () => {
     allow("cat /etc/hosts");
     allow("ls -la /tmp");
     allow("rg TODO /usr/include");
+    allow("sed 's/a/b/g' /etc/hosts");
     ask("rm /tmp/x");
     ask("echo x > /tmp/x");
     ask("cp /tmp/x ./x");
@@ -131,6 +132,17 @@ describe("three situations and workspace red lines", () => {
     ask("rm --unknown build");
     ask("rg --pre ./filter TODO src");
     ask("cp -t .git source");
+  });
+  it("supports only finite substitution-only sed programs", () => {
+    allow("sed 's/a/b/' README.md");
+    allow("sed -n -e 's/a/b/p' README.md");
+    allow("sed -e 's/a/b/' -e 's/c/d/g' README.md");
+    allow("sed -i 's/a/b/g' src/file.ts");
+    ask("sed '1w /tmp/out' README.md");
+    ask("sed '/x/w /tmp/out' README.md");
+    ask("sed '1e touch /tmp/out' README.md");
+    ask("sed 's/a/b/w /tmp/out' README.md");
+    ask("sed -i '1d' README.md");
   });
 });
 
@@ -197,6 +209,9 @@ describe("situation 3 profiles", () => {
     ask("curl -X POST https://example.com");
     ask("curl -o out https://example.com");
     ask('curl "$URL"');
+    ask("curl https://user:secret@example.com/path");
+    ask("curl 'https://example.com/{one,two}'");
+    ask("curl 'https://example.com/[1-2]'");
   });
   it("allows reviewed git forms only", () => {
     allow("git status");
@@ -204,6 +219,8 @@ describe("situation 3 profiles", () => {
     allow("git add file");
     allow("git commit -m 'message'");
     allow("git fetch --prune");
+    allow("git fetch origin main");
+    allow("git fetch https://example.com/org/repo.git main:incoming");
     allow("git -C /tmp/repo log --oneline");
     ask("git push");
     ask("git reset --hard");
@@ -211,6 +228,10 @@ describe("situation 3 profiles", () => {
     ask("git -C /tmp/repo add file");
     ask("git diff --ext-diff");
     ask("git grep --open-files-in-pager=less pattern");
+    ask("git fetch 'ext::sh -c touch% /tmp/out'");
+    ask("git fetch helper::payload");
+    ask("git fetch custom://example.com/repo");
+    ask("git fetch --all origin");
   });
   it("requires clean workflow control files", () => {
     allow("npm run build");
@@ -312,5 +333,9 @@ describe("cwd and redirects", () => {
     ask("echo x <> /tmp/file");
     ask("cat <<EOF\nx\nEOF");
     ask("echo x > $OUT");
+    ask("cat < /dev/tcp/example.com/80");
+    ask("cat < /dev/udp/example.com/53");
+    ask("cat < /dev/fd/3");
+    ask("cat < /proc/self/fd/3");
   });
 });
