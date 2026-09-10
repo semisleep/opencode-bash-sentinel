@@ -31,9 +31,9 @@ Sentinel is not:
 
 ## 3. Policy contract
 
-### 3.1 Three situations
+### 3.1 Recognition and three situations
 
-The parser first produces decision units for executable command nodes and explicit redirects. Each unit is then classified by its relationship to the filesystem workspace:
+The parser and structural normalization layer first produce decision units for executable command nodes and explicit redirects. A finite recognizer must accept each unit's complete invocation shape and produce explicit facts such as path effects, profile family, mutation scopes, and stability dependencies. Classification maps those facts to a situation; it is not a second universal attempt to guess which arguments look like paths.
 
 ```ts
 type Situation =
@@ -46,7 +46,7 @@ type Situation =
 2. **Clearly outside the workspace:** allow only finite recognized read-only forms; ask for writes and unsupported forms.
 3. **No workspace relationship, or indeterminate:** allow only exact reviewed command-and-option profiles; ask for everything else.
 
-Only a finite path recognizer may place a command in situation 1 or 2. A recognizer matches a supported executable and complete invocation shape, identifies its relevant path operands, and stops at the first unsupported option or construct. Unknown commands and unsupported forms go directly to situation 3 even when an argument resembles a path.
+Only a finite path recognizer may produce the path facts that place a command in situation 1 or 2. It matches a supported executable and complete invocation shape, identifies the roles of its relevant path operands, and stops at the first unsupported option or construct. Unknown commands and unsupported forms go directly to situation 3 even when an argument resembles a path. Git, network, informational, and development-workflow recognizers instead produce explicit situation-3 profile candidates.
 
 “Indeterminate” is not the same as a parser failure. The analyzer may understand that `curl` performs network access while correctly deciding that it has no filesystem workspace classification. It may also parse a dynamic filesystem command but be unable to resolve its target. Both use situation 3, but retain different audit reasons.
 
@@ -100,6 +100,8 @@ Untracked, modified, ignored, or generated workspace scripts do not qualify. Nei
 Argument screening is syntactic. Absolute paths, `~` paths, and relative paths with explicit path syntax are classified; ordinary bare values are not assumed to be paths. Only the entry script is compared with `HEAD`. Imported modules, sourced dependencies, configuration, generated inputs, and runtime behavior are not recursively checked.
 
 “Committed and unchanged” is a trusted repository baseline, not proof that the script stays inside the workspace. If Git state cannot be classified clearly, ask.
+
+For `source FILE` and `. FILE`, apply the same entry-file checks. After approval, do not model changes the sourced file may make to cwd, variables, functions, aliases, shell options, or later command interpretation. Those effects are accepted as part of trusting the committed entry file. In particular, do not introduce a cross-unit shell-state simulator or automatically ask merely because another command follows `source`.
 
 ### 3.3 Situation 2: clearly outside the workspace
 
@@ -179,15 +181,39 @@ A missing, untracked, modified, or ambiguous required control file produces `ask
 
 ### 3.5 Commands containing multiple decision units
 
-A Bash source may contain command nodes and redirects from multiple situations. Classify each decision unit separately and allow the complete source only when every unit is allowed by the rule for its own situation.
+A Bash source may contain command nodes and redirects from multiple situations. Classify each decision unit separately, then apply the source-level completeness and stability invariants below.
 
 For `curl -fsSL URL > result.json`, the curl command uses a situation-3 profile and the redirect is a situation-1 workspace write. Changing the target to `/tmp/result.json` creates a situation-2 external write, so the complete source asks.
 
-Only nodes already represented as executable commands or redirects by the Bash AST become decision units. Do not reinterpret wrapper arguments, `sh -c` strings, `eval` text, `xargs` operands, or `find -exec` operands as nested commands.
+Executable commands, redirects, and nested executable nodes such as command substitutions become decision units when represented by the Bash AST. Every execution- or I/O-relevant AST node must be consumed by a supported normalization rule or make the complete source unsupported. Approval is forbidden when normalization leaves a relevant node or construct unaccounted for. This full-consumption invariant prevents parser additions and uncommon syntax from becoming silent policy gaps.
+
+All redirect operators must be classified explicitly. Treat `<>` and analogous read-write forms as writes. Bash network paths such as `/dev/tcp/...` and `/dev/udp/...`, dynamic file-descriptor paths such as `/dev/fd/...` or `/proc/self/fd/...`, and any heredoc, here-string, process substitution, arithmetic expansion, or other expansion whose executable contents cannot be completely extracted are unsupported. `/dev/null` may be an exact finite exception. Do not infer that an unfamiliar external input redirect is an ordinary file read.
+
+Do not reinterpret wrapper arguments, `sh -c` strings, `eval` text, `xargs` operands, or `find -exec` operands as nested commands. The containing invocation is unsupported as described below, so its unparsed string is not silently approved.
 
 The initial policy has no allow profile for `sudo`, `doas`, `env ... COMMAND`, `timeout`, `watch`, `nohup`, `nice`, `stdbuf`, `xargs`, `sh -c`, other shell `-c` forms, or `eval`. They enter situation 3 and ask as whole invocations. A future high-frequency wrapper may receive one exact invocation profile, but must not introduce a generic recursive unwrapping engine.
 
 Support at most one simple cwd transition: literal `cd DIR` followed by a simple sequential command may change the cwd used for that command's explicit relative paths. Dynamic cwd changes, branching/alternate cwd states, or more complex control flow ask. Do not reason about whether `&&`, `||`, conditions, or loops execute at runtime; every syntactically present decision unit must allow.
+
+#### Stability conflicts
+
+Decision units may contribute two generic path sets:
+
+- `mutationScopes`: paths or directory ranges whose contents, existence, or location the visible syntax may directly modify, remove, truncate, or move;
+- `stabilityDependencies`: paths whose analysis-time state is a prerequisite for that unit's approval, including a trusted workspace entry script and a development workflow's checked control files.
+
+If any mutation scope overlaps any stability dependency from another unit in the same Bash source, the complete source asks. Equality and ancestor/descendant coverage count as overlap. The comparison is intentionally independent of syntactic order and control flow; a conservative false prompt is preferable to simulating execution order.
+
+For example, both `sed -i ... scripts/check.sh && ./scripts/check.sh` and `printf ... > package.json && npm run build` ask even when their individual units would otherwise allow. This prevents an approval check from relying on a file snapshot that another visible unit may invalidate before use.
+
+Git is one current mechanism for validating a dependency's initial state, but the aggregator does not implement a Git-specific conflict. A future hash, signature, or other trust predicate can produce the same `stabilityDependencies`. Conversely, opaque mutations hidden inside an approved script, sourced file, package hook, Git hook, or development tool do not produce mutation scopes and remain within the documented runtime trust boundary.
+
+The complete source allows only when all four conditions hold:
+
+1. parsing and normalization succeed;
+2. every execution- or I/O-relevant AST node is accounted for;
+3. every decision unit allows under the rule for its situation;
+4. no mutation scope overlaps a stability dependency.
 
 ### 3.6 File-edit permission
 
@@ -209,13 +235,16 @@ OpenCode permission event
 parse Bash once
         |
         v
-supported-structure normalization
+normalize supported structure and require full AST consumption
         |
         v
-finite recognizers -> decision units -> situations
+finite recognizers -> decision units and explicit facts
         |
         v
-situation-specific rules
+facts -> situations -> situation-specific rules
+        |
+        v
+all units allow and no stability conflict
         |
         +-- allow -> reply "once"
         |
@@ -237,22 +266,24 @@ Normalize only the structures the policy deliberately supports:
 
 Do not normalize wrapper arguments or embedded strings into commands. Unsupported wrappers, nested payloads, dynamic cwd, and complex control flow produce situation-3 ask decisions.
 
-The normalized representation should carry explicit cwd, path, invocation, redirect, and situation information instead of mutating several global confidence booleans. One Bash source may produce several independently classified decision units.
+Normalization must report whether it consumed every execution- or I/O-relevant AST node. An unconsumed relevant node makes the complete source unsupported even when all extracted units would independently allow. New parser node types therefore fail closed until normalization explicitly handles or rejects them.
+
+The normalized representation should carry explicit cwd, invocation, redirect, and structural-coverage information instead of mutating several global confidence booleans. One Bash source may produce several decision units; recognizers add path effects, profile candidates, mutation scopes, and stability dependencies before classification assigns situations.
 
 ### 4.3 Operation profiles
 
 Finite recognizers and profiles support the three situations without trying to merge their rules:
 
-1. Path recognizers accept complete, simple invocation shapes and extract the relevant paths used to choose situation 1 or 2.
-2. Situation-3 allow profiles recognize exact informational, network, Git, and development-workflow forms.
-3. The workspace-script checker implements the third red line with a shared Git-clean-file predicate.
-4. A generic redirect recognizer creates a separate path decision unit.
+1. Path recognizers accept complete, simple invocation shapes and produce typed read, write, delete, move, source, and destination path facts used to choose situation 1 or 2.
+2. Situation-3 recognizers produce exact informational, network, Git, and development-workflow profile candidates.
+3. The workspace-script recognizer identifies the entry path; the checker implements the third red line with a shared committed-and-unchanged predicate.
+4. Redirect recognizers create separate units and classify the complete redirect form, including whether it reads, writes, duplicates an fd, contains executable expansion, or uses a special Bash path.
 
-A recognizer either accepts the whole supported shape or returns unsupported; partial recognition must not produce an allow. It should not try to prove arbitrary runtime safety. The same path recognizer can feed situation 1 or 2 depending on its resolved targets.
+A recognizer either accepts the whole supported shape and produces all required facts, or returns unsupported; partial recognition must not produce an allow. Rejection by a path recognizer must not fall through to a broader profile for the same invocation. Recognizers should not try to prove arbitrary runtime safety. The same path recognizer can feed situation 1 or 2 depending on its resolved targets.
 
 ### 4.4 Situation-specific decision
 
-Apply the rule belonging to each decision unit's situation, then reduce the complete source with “all units must allow.” Avoid cross-coupled outputs such as “command trusted”, “external effects modeled”, and special flags that override a second analyzer.
+Apply the rule belonging to each decision unit's situation. The source-level aggregator then checks structural completeness, requires every unit to allow, and rejects overlaps between `mutationScopes` and `stabilityDependencies`. It does not otherwise simulate order, branches, filesystem changes, or Shell state. Avoid cross-coupled outputs such as “command trusted”, “external effects modeled”, and special flags that override a second analyzer.
 
 Reasons are part of the result so tests and audit logs can explain why a command asked.
 
@@ -312,6 +343,9 @@ Behavior known to differ from the target includes:
 - current wrappers and embedded shell payloads are recursively analyzed, while the target policy treats them as unsupported whole invocations;
 - current environment-assignment behavior does not match the target short high-risk-name exception;
 - Git is currently partly classified through workspace paths instead of exclusively through situation-3 profiles;
+- current normalization does not expose and enforce the target full-consumption invariant for every execution- or I/O-relevant AST node;
+- current aggregation does not detect overlaps between mutation scopes and stability dependencies;
+- current redirect handling does not implement the target's complete redirect-form and Bash-special-path policy;
 - current workspace-root restrictions include metadata operations beyond direct root destruction.
 
 This list is a migration guide, not an authorization to change code before the target documentation is approved.
@@ -347,12 +381,12 @@ The recommended configuration routes Bash and edit requests through the approval
 
 1. Approve this product contract and resolve any remaining scope ambiguity.
 2. Add target-policy tests before deleting old behavior.
-3. Introduce an explicit decision-unit/situation model and small finite recognizer registries.
+3. Introduce an explicit decision-unit/fact/situation model, full-AST-consumption result, and small finite recognizer registries.
 4. Implement situation 1: finite path recognizers, the three red lines, and Git-backed workspace-script classification.
 5. Implement situation 2: the finite external-read profiles and external-write escalation.
 6. Implement situation 3: informational, curl, Git, and unsupported/indeterminate profiles.
 7. Add the finite Node, Go, pip, Cargo, and Make workflow profiles with Git-clean control-file checks.
-8. Add Bash-assignment handling, the high-risk variable-name set, redirect units, bounded literal `cd`, and all-units composition.
+8. Add Bash-assignment handling, the high-risk variable-name set, complete redirect handling, bounded literal `cd`, and source aggregation with stability-conflict detection.
 9. Remove Kimi analyzer composition and obsolete confidence flags.
 10. Delete superseded tests and update README status only after runtime behavior matches.
 
@@ -378,6 +412,12 @@ Required groups:
 - unknown commands and unsupported or indeterminate forms → ask;
 - parser failure/budget exhaustion → ask;
 - commands and redirects from different situations compose, and every decision unit must allow;
+- any unconsumed execution- or I/O-relevant AST node → ask;
+- command substitutions and other supported nested executable nodes become independent decision units;
+- unsupported executable expansions, heredocs, here-strings, process substitutions, and redirect forms → ask;
+- Bash `/dev/tcp` and `/dev/udp`, dynamic fd paths, and read-write external redirects → ask;
+- overlapping mutation scopes and stability dependencies → ask, including file equality and directory containment;
+- non-overlapping visible mutations do not create a stability conflict;
 - wrappers and embedded command strings are not recursively expanded and ask;
 - ordinary Bash environment assignments allow, while the fixed high-risk name set asks;
 - a command substitution inside an environment value remains an independent decision unit;
@@ -385,6 +425,7 @@ Required groups:
 - staged, unstaged, untracked, external, dynamic, and ambiguous scripts → ask;
 - committed scripts with explicit external or dynamic path arguments → ask;
 - committed-script dependencies are not recursively inspected;
+- a committed and unchanged `source`/`.` file is allowed even when another command follows; its Shell-state effects are not modeled;
 - supported Node, Go, pip, Cargo, and Make workflows with committed unchanged control files → allow;
 - the same workflows with missing, staged, unstaged, untracked, or ambiguous required control files → ask;
 - unlisted subcommands of an otherwise recognized development tool → ask;
@@ -398,6 +439,8 @@ Use audit data to find the most frequent remaining prompts. Add a profile only w
 - Filesystem-canonical symlink containment.
 - Runtime enforcement of workspace boundaries or red lines.
 - Recursive script dependency analysis.
+- Shell-state changes made by an approved `source`/`.` file, including their effects on later commands in the same Bash source.
+- Filesystem or Git-state changes made concurrently after analysis and before process execution.
 - Package-hook and trusted-workflow inspection.
 - Curl configuration, proxy environment, and remote-side-effect verification.
 - Tool-specific effects of environment variables outside the fixed high-risk set.

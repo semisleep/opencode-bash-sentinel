@@ -23,7 +23,7 @@ A harmless command may still require approval when it falls outside the supporte
 
 ## Target policy
 
-"Workspace" means the project worktree supplied by OpenCode. Sentinel parses Bash into command and redirect decision units, then classifies each unit into one of three situations. Each situation has a different rule; network activity is not treated as a workspace path.
+"Workspace" means the project worktree supplied by OpenCode. Sentinel parses Bash, verifies that every execution- or I/O-relevant syntax node is accounted for, and extracts command and redirect decision units. A finite recognizer either accepts a unit's complete shape and produces classification facts or marks it unsupported. Accepted facts place the unit into one of three situations. Each situation has a different rule; network activity is not treated as a workspace path.
 
 Classification is intentionally finite. Only commands with a supported path recognizer can enter the first two situations. An unknown command does not become a workspace command merely because one argument looks like `./file`; unsupported command shapes go directly to the third situation.
 
@@ -80,6 +80,8 @@ source scripts/env.sh
 An untracked or modified workspace script, ambiguous Git state, or a visibly external or ambiguous argument therefore requires user approval under this red line. No situation-3 profile overrides it. An external entry script is instead situation 2; inline code, stdin/heredoc programs, and dynamic entry paths are situation 3. Those forms also require user approval under the initial profiles, but they do not become workspace-script red-line cases.
 
 Only the entry script and visible command line are checked. Imported modules, sourced dependencies, configuration files, generated files, and runtime behavior are not recursively inspected. “Committed and unchanged” is a trusted repository baseline, not proof that the script stays inside the workspace.
+
+For `source FILE` and `. FILE`, the same entry-file checks apply. Once such a file is trusted, Sentinel does not model how it changes cwd, variables, functions, aliases, shell options, or the meaning of later commands in the same Bash source. This is part of the accepted committed-script trust boundary; it does not introduce recursive shell-state analysis.
 
 ### 2. Clearly outside the workspace
 
@@ -177,7 +179,7 @@ Assigning one of these names requires user approval because it can change execut
 
 ### Commands containing more than one decision unit
 
-Only commands and redirects represented as real nodes in the Bash AST become separate decision units. The complete Bash command is approved only when every unit passes the rule for its situation.
+Commands, redirects, and nested executable nodes such as command substitutions become separate decision units when they are represented by the Bash AST. Before any approval, every execution- or I/O-relevant AST node must either be consumed by a supported rule or cause the complete Bash source to require user approval. Unsupported nodes are never silently ignored.
 
 For example:
 
@@ -185,11 +187,24 @@ For example:
 curl -fsSL https://example.com/data > result.json
 ~~~
 
-The curl invocation is a third-situation profile and the redirect is a first-situation workspace write. If both units are approved, the complete command is approved. Changing the redirect to `/tmp/result.json` creates a second-situation external write, so the complete command requires user approval.
+The curl invocation is a third-situation profile and the redirect is a first-situation workspace write. If both units are approved, the complete command may be approved. Changing the redirect to `/tmp/result.json` creates a second-situation external write, so the complete command requires user approval.
+
+Every recognized direct mutation contributes a `mutationScope`: a path or directory range whose contents, existence, or location may change. A script or development-workflow profile that relies on an analysis-time file state contributes that path as a `stabilityDependency`. If any mutation scope overlaps any stability dependency in the same Bash source, the complete source requires user approval. The comparison is deliberately order-independent and does not attempt control-flow analysis:
+
+~~~bash
+sed -i 's/safe/dangerous/' scripts/check.sh && ./scripts/check.sh
+printf '%s' '{}' > package.json && npm run build
+~~~
+
+Both examples require approval even if all individual units would otherwise be allowed. Git may establish that a dependency is initially committed and unchanged, but the cross-unit conflict rule is generic and is not a Git-specific part of the aggregator. Hidden mutations inside an approved script or development tool are not modeled.
 
 Wrapper arguments and embedded command strings are not reinterpreted as commands. `sudo`, `env ... COMMAND`, `timeout`, `watch`, `nohup`, `nice`, `stdbuf`, `xargs`, `sh -c`, `bash -c`, and `eval` therefore enter the third situation and require user approval in the initial policy. This avoids recursive wrapper grammars and arbitrary nested analysis.
 
 Literal `cd DIR` followed by a simple command may update the cwd used to resolve that next command. Dynamic cwd changes, branching cwd state, or more complex control flow are unsupported and require user approval.
+
+Every redirection form must also be explicitly understood. Read-write redirects such as `<>` are writes. Bash network paths such as `/dev/tcp/...` and `/dev/udp/...`, dynamic file-descriptor paths, and a heredoc, here-string, process substitution, or expansion whose executable contents are not completely accounted for require user approval. Ordinary exact exceptions such as `/dev/null` may have their own finite rule.
+
+The complete Bash source is automatically approved only when parsing succeeds, all relevant AST nodes are accounted for, every decision unit is allowed by its situation, and no mutation scope overlaps a stability dependency.
 
 ## Trust boundary and known limitations
 
@@ -199,6 +214,8 @@ Sentinel is a permission heuristic. It analyzes submitted command text and Git s
 - A committed and unchanged script is trusted as repository baseline, not proven safe.
 - Approved development workflows trust committed, unchanged control files but remain opaque at runtime.
 - Script dependencies and runtime-computed targets are not inspected.
+- A trusted `source`/`.` file may change the Shell state and therefore the meaning of later commands in the same Bash source; those changes are not modeled.
+- Another process may change filesystem or Git state after analysis and before the approved command executes; Sentinel does not provide an atomic snapshot.
 - Bare command names are not resolved to prove which executable the ambient `PATH` will launch.
 - Path comparison is literal and case-sensitive; case-insensitive filesystem behavior is not modeled.
 - Approved network profiles are explicit trust decisions, not proof of remote read-only behavior.
