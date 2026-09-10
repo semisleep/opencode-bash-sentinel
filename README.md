@@ -39,6 +39,8 @@ echo broken > .git/config
 ./scripts/modified-check
 ```
 
+The last example asks when that entry file is modified, untracked, or otherwise cannot be verified against `HEAD`.
+
 ### Outside the workspace
 
 A finite set of recognized read-only forms is allowed. Recognized writes and unsupported forms require approval.
