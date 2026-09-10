@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { SyntaxNode } from "../../parser/node";
+import { looksLikePath, resolvePath, withinWorkspace } from "../paths";
 import type { Effect, UnitSeed, WorkspaceContext } from "../types";
 
 export function unsupported(node: SyntaxNode, reason: string): UnitSeed {
@@ -78,4 +79,25 @@ export function absoluteDependencies(
     reason: allowed ? reason : `${reason} requires clean committed files`,
     dependencies: files,
   };
+}
+
+// A visible argument forwarded to a trusted entry (direct script or workflow
+// `--` tail) is unsafe when it names a path outside the workspace.
+export function unsafeVisibleArgument(
+  argument: string | undefined,
+  ctx: WorkspaceContext,
+  cwd: string,
+) {
+  if (argument === undefined) return true;
+  const equals = argument.indexOf("=");
+  if (equals > 0) {
+    const value = argument.slice(equals + 1);
+    if (looksLikePath(value))
+      return !withinWorkspace(resolvePath(value, ctx, cwd) ?? "", ctx.workspace);
+  }
+  if (argument.startsWith("-") && argument.includes("/")) return true;
+  return (
+    looksLikePath(argument) &&
+    !withinWorkspace(resolvePath(argument, ctx, cwd) ?? "", ctx.workspace)
+  );
 }

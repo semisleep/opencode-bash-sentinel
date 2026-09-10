@@ -36,6 +36,17 @@ describe("Node workflow profile", () => {
     ask("yarn run --cwd /tmp/pkg test");
   });
 
+  it("screens arguments forwarded after `--` like direct script arguments", () => {
+    allow("npm test -- src/");
+    allow("npm test -- --reporter=dot");
+    allow("npm run build -- --output=dist/");
+    ask("npm test -- --require=/tmp/pwn.js");
+    ask("npm test -- /etc/passwd");
+    ask("npm run build -- --external=/tmp/x");
+    ask("npm test -- ~");
+    ask("npm test -- env=~/secret");
+  });
+
   it("participates in generic stability conflicts", () => {
     ask("printf x > package.json && npm run build");
     allow("printf x > other.json && npm run build");

@@ -24,7 +24,8 @@ export function looksLikePath(value: string) {
     value === ".." ||
     value.startsWith("./") ||
     value.startsWith("../") ||
-    value.startsWith("~/") ||
+    // Bash expands any leading tilde (~, ~/, ~user, ~+), so it is a path.
+    value.startsWith("~") ||
     value.includes("/")
   );
 }
@@ -46,7 +47,18 @@ export function withinWorkspace(value: string, workspace: string) {
 }
 
 export function samePath(a: string, b: string) {
-  return path.normalize(a) === path.normalize(b);
+  return (
+    stripTrailingSeparators(path.normalize(a)) ===
+    stripTrailingSeparators(path.normalize(b))
+  );
+}
+
+// Node's normalize keeps one trailing separator, but path identity for the
+// red lines must not depend on that spelling: tab completion routinely
+// yields `rm -rf /work/project/`, which names the same root.
+function stripTrailingSeparators(value: string) {
+  const stripped = value.replace(/[\\/]+$/, "");
+  return stripped === "" ? "/" : stripped;
 }
 
 export function pathsOverlap(a: string, b: string) {

@@ -12,6 +12,18 @@ describe("workspace situations and red lines", () => {
     ask("rm .git/index");
   });
 
+  it("applies the root-removal red line to trailing-separator spellings", () => {
+    ask("rm -rf /work/project/");
+    ask("rm -rf //work/project/");
+    ask("rm -rf /work/./project/");
+    ask("rm -rf /work/project//");
+    ask("rm -rf /work/project/../project/");
+    ask("mv /work/project/ sub");
+    ask("rmdir /work/project/");
+    allow("rm -rf /work/project/build/");
+    allow("mv /work/project/src /work/project/dst");
+  });
+
   it("allows finite external reads and asks for external writes", () => {
     allow("cat /etc/hosts");
     allow("ls -la /tmp");

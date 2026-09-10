@@ -1,6 +1,6 @@
 import { withinWorkspace } from "../paths";
-import type { CommandProfile } from "../types";
-import { dependencies } from "./helpers";
+import type { CommandProfile, WorkspaceContext } from "../types";
+import { dependencies, unsafeVisibleArgument } from "./helpers";
 
 export const NODE_WORKFLOW_NAMES = new Set(["npm", "pnpm", "yarn", "bun"]);
 
@@ -19,7 +19,7 @@ export const recognizeNodeWorkflow: CommandProfile = (
       ? args[0] === "test" ||
         (args[0] === "run" && !!args[1] && !args[1]!.startsWith("-"))
       : args[0] === "run" && !!args[1] && !args[1]!.startsWith("-"));
-  if (shape) shape = validTail(args as string[], name);
+  if (shape) shape = validTail(args as string[], name, ctx, cwd);
   return dependencies(
     node,
     ctx,
@@ -30,8 +30,21 @@ export const recognizeNodeWorkflow: CommandProfile = (
   );
 };
 
-function validTail(args: string[], name: string) {
+function validTail(
+  args: string[],
+  name: string,
+  ctx: WorkspaceContext,
+  cwd: string,
+) {
   const start = name === "npm" && args[0] === "test" ? 1 : 2;
   const tail = args.slice(start);
-  return tail.length === 0 || tail[0] === "--";
+  // Everything after `--` is forwarded verbatim to the trusted script, so it
+  // must pass the same visible-argument screening as a direct invocation.
+  return (
+    tail.length === 0 ||
+    (tail[0] === "--" &&
+      tail
+        .slice(1)
+        .every((argument) => !unsafeVisibleArgument(argument, ctx, cwd)))
+  );
 }

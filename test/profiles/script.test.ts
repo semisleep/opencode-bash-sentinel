@@ -27,6 +27,15 @@ describe("workspace script profile", () => {
     ask("./scripts/check", { "scripts/check": "unknown" });
   });
 
+  it("treats tilde-expanding arguments as visible paths", () => {
+    ask("./scripts/check ~");
+    ask("bash scripts/build.sh ~");
+    ask("./scripts/check ~user");
+    ask("./scripts/check ~-");
+    ask("./scripts/check ~/");
+    allow("./scripts/check build/~backup");
+  });
+
   it("checks the real Git HEAD and worktree", () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "sentinel-git-"));
     try {

@@ -1,7 +1,7 @@
 import type { SyntaxNode } from "../../parser/node";
-import { looksLikePath, resolvePath, withinWorkspace } from "../paths";
+import { resolvePath, withinWorkspace } from "../paths";
 import type { Invocation, UnitSeed, Word, WorkspaceContext } from "../types";
-import { unsupported } from "./helpers";
+import { unsafeVisibleArgument, unsupported } from "./helpers";
 
 export const INTERPRETER_NAMES = new Set([
   "bash",
@@ -59,23 +59,4 @@ export function recognizeScript(
       : "workspace script red line or external script",
     dependencies: inside ? [file] : [],
   };
-}
-
-function unsafeVisibleArgument(
-  argument: string | undefined,
-  ctx: WorkspaceContext,
-  cwd: string,
-) {
-  if (argument === undefined) return true;
-  const equals = argument.indexOf("=");
-  if (equals > 0) {
-    const value = argument.slice(equals + 1);
-    if (looksLikePath(value))
-      return !withinWorkspace(resolvePath(value, ctx, cwd) ?? "", ctx.workspace);
-  }
-  if (argument.startsWith("-") && argument.includes("/")) return true;
-  return (
-    looksLikePath(argument) &&
-    !withinWorkspace(resolvePath(argument, ctx, cwd) ?? "", ctx.workspace)
-  );
 }
