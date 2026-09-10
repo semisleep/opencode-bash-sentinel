@@ -8,7 +8,7 @@ const INFORMATION_FORMS: Record<string, RegExp> = {
   id: /^(?: -(?:[ugGnr]+))*$/,
   free: /^(?: -(?:[bkmghwtsc]+))*$/,
   vm_stat: /^$/,
-  nproc: /^(?: --(?:all|ignore)(?: \d+)?)?$/,
+  nproc: /^(?: --all| --ignore \d+)?$/,
   lscpu: /^(?: -[abcepJ])*$/,
   ps: /^(?: (?:aux|[aux]|-[aefx]))*$/,
   pwd: /^(?: -[LP])?$/,
@@ -19,7 +19,13 @@ const INFORMATION_FORMS: Record<string, RegExp> = {
 
 export const informationNames = new Set(Object.keys(INFORMATION_FORMS));
 
-export const recognizeInformation: CommandProfile = (node, invocation, _ctx, _cwd, name) => {
+export const recognizeInformation: CommandProfile = (
+  node,
+  invocation,
+  _ctx,
+  _cwd,
+  name,
+) => {
   const values = invocation.args.map((argument) => argument.literal);
   const allowed =
     values.every(Boolean) &&

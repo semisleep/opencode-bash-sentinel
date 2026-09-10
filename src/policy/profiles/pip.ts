@@ -17,12 +17,22 @@ export function recognizePip(
   if (args.some((argument) => argument === undefined))
     return unsupported(node, "dynamic pip");
   const values = args as string[];
-  if (["list", "show", "check", "freeze"].includes(values[0] ?? ""))
+  if (values[0] === "show")
     return {
       kind: "command",
       text: node.text,
       situation: "workspace-neutral-or-indeterminate",
-      allowed: values.slice(1).every((value) => !value.startsWith("-")),
+      allowed:
+        values.length > 1 &&
+        values.slice(1).every((value) => !value.startsWith("-")),
+      reason: "pip information",
+    };
+  if (["list", "check", "freeze"].includes(values[0] ?? ""))
+    return {
+      kind: "command",
+      text: node.text,
+      situation: "workspace-neutral-or-indeterminate",
+      allowed: values.length === 1,
       reason: "pip information",
     };
   if (
