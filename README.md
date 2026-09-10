@@ -52,7 +52,7 @@ echo x > /tmp/out    # ask
 cat ~/.ssh/id_rsa    # ask
 ```
 
-The sensitive list is best-effort, not a completeness guarantee: an unlisted path keeps the ordinary external-read behavior, and matching is lexical, so a symlink pointing at a sensitive location is not caught. Extra roots can be added with the `sensitivePaths` option; they only add prompts.
+The sensitive list is best-effort, not a completeness guarantee: an unlisted path keeps the ordinary external-read behavior, and matching is lexical (case-insensitive, like the `.git` rule), so a symlink pointing at a sensitive location is not caught. Extra roots can be added with the `sensitivePaths` option; they only add prompts.
 
 If one recognized command mixes inside and outside targets, the entire command is treated as outside.
 

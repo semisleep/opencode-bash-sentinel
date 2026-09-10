@@ -15,6 +15,14 @@ describe("isSensitiveTarget", () => {
     expect(isSensitiveTarget("/etc/shadow", home)).toBe(true);
   });
 
+  it("matches case-insensitively, like the .git red line", () => {
+    // macOS is case-insensitive; a case-varied root must not slip past.
+    expect(isSensitiveTarget("/home/dev/.SSH/id_rsa", home)).toBe(true);
+    expect(isSensitiveTarget("/home/dev/.Ssh", home)).toBe(true);
+    expect(isSensitiveTarget("/ETC/shadow", home)).toBe(true);
+    expect(isSensitiveTarget("/opt/VAULT/key", home, ["/opt/vault"])).toBe(true);
+  });
+
   it("does not match siblings or unrelated paths", () => {
     expect(isSensitiveTarget("/home/dev/.sshfoo", home)).toBe(false);
     expect(isSensitiveTarget("/home/dev/.aws-notes", home)).toBe(false);

@@ -50,17 +50,23 @@ function expand(root: string, homedir: string): string {
  * True when a resolved path equals, or lies under, a sensitive root. `extraRoots`
  * are additive user-supplied roots (union with the defaults); they can only add
  * matches, never remove a default, keeping the rule fail-closed.
+ *
+ * Matching is case-insensitive, mirroring the `.git` red line (`hasGitSegment`):
+ * the primary platform (macOS) has a case-insensitive filesystem, so `~/.SSH`
+ * reaches the same directory as `~/.ssh` and must not slip past. Folding also on
+ * a case-sensitive filesystem only widens toward ask, which is the safe
+ * direction for a red line.
  */
 export function isSensitiveTarget(
   resolvedPath: string,
   homedir: string,
   extraRoots: readonly string[] = [],
 ): boolean {
-  const value = path.normalize(resolvedPath);
+  const value = path.normalize(resolvedPath).toLowerCase();
   const roots = [
     ...defaultRoots(homedir),
     ...extraRoots.map((root) => expand(root, homedir)),
-  ];
+  ].map((root) => root.toLowerCase());
   return roots.some(
     (root) => value === root || value.startsWith(root + path.sep),
   );

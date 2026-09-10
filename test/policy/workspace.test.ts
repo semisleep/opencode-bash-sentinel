@@ -34,6 +34,8 @@ describe("workspace situations and red lines", () => {
     ask("dd if=/home/dev/.aws/credentials");
     ask("cat /etc/shadow");
     ask("cat ~/.ssh/../.ssh/id_rsa"); // normalizes under ~/.ssh
+    ask("cat ~/.SSH/id_rsa"); // case-insensitive fs must not slip past
+    ask("cat /ETC/shadow");
     // Adjacent siblings must NOT match the roots.
     allow("cat ~/.sshfoo");
     allow("cat ~/.aws-notes");

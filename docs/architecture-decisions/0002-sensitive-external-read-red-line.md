@@ -81,6 +81,10 @@ the situation-2 read branch of `finalize`.
 - Matching reuses the existing lexical containment shape: a path matches a root
   when it equals the root or lies under `root + path.sep`. So `~/.ssh` and
   everything beneath it matches, while a sibling like `~/.sshfoo` does not.
+  Comparison is case-insensitive, mirroring the `.git` red line
+  (`hasGitSegment`), because the primary platform (macOS) is case-insensitive and
+  `~/.SSH` must not slip past; folding also on a case-sensitive filesystem only
+  widens toward ask.
 - The predicate is consulted in situation 2 only, and only for `read` effects. A
   read whose resolved target matches asks with reason `sensitive external read`.
   External writes already ask, so writes need no new rule.
@@ -132,7 +136,7 @@ Honesty about limits, to be documented, not papered over:
   allow, a missing entry reverts to today's behavior rather than creating a false
   guarantee — but the docs must state plainly that this is not a completeness
   claim.
-- Matching is **lexical**, consistent with the existing containment boundary.
+- Matching is **lexical** (though case-insensitive, like the `.git` red line).
   `cat ~/symlink-to-ssh` is not caught. This is the same accepted trust boundary
   as workspace containment, not a new weakness.
 
