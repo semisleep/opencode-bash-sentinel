@@ -15,4 +15,14 @@ describe("search profiles", () => {
     ask("grep -f /tmp/patterns file");
     ask("rg $PATTERN src");
   });
+
+  it("accepts grep's valueless read-only flags but keeps rg's classes apart", () => {
+    allow('grep -rn "pattern" src');
+    allow('grep -iE "a|b" file');
+    allow("grep -Erqxb pattern file");
+    allow("grep -P pattern file");
+    ask("rg -E utf8 pattern");
+    ask("rg -r replacement pattern file");
+    ask("grep -A 5 pattern file");
+  });
 });

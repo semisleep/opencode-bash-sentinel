@@ -4,6 +4,13 @@ import { pathEffects, unsupported } from "./helpers";
 
 export const SEARCH_NAMES = new Set(["rg", "ripgrep", "grep"]);
 
+// -E and -r are valueless for grep but value-taking in ripgrep (--encoding,
+// --replace), so grep gets its own wider class of valueless read-only flags.
+const SHORT_OPTIONS = {
+  grep: /^-[nHhIiSsUvVwcClLoEaqxbPrR]+$/,
+  default: /^-[nHhIiSsUvVwcClLo]+$/,
+} as const;
+
 export function recognizeSearch(
   node: SyntaxNode,
   invocation: Invocation,
@@ -46,7 +53,10 @@ export function recognizeSearch(
         continue;
       }
       if (
-        !/^-[nHhIiSsUvVwcClLo]+$/.test(value) &&
+        !(name === "grep"
+          ? SHORT_OPTIONS.grep
+          : SHORT_OPTIONS.default
+        ).test(value) &&
         ![
           "--hidden",
           "--follow",
