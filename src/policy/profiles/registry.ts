@@ -12,6 +12,7 @@ import { unsupported } from "./helpers";
 import { informationNames, recognizeInformation } from "./information";
 import { recognizeMakeWorkflow } from "./make";
 import { NODE_WORKFLOW_NAMES, recognizeNodeWorkflow } from "./node";
+import { recognizeNpx } from "./npx";
 import { recognizePip } from "./pip";
 import { recognizeEcho, recognizePrintf } from "./printf";
 import { recognizeSed } from "./sed";
@@ -62,6 +63,7 @@ export function recognizeCommand(
   if (name === "git") return recognizeGit(node, invocation, ctx, cwd, name);
   if (NODE_WORKFLOW_NAMES.has(name))
     return recognizeNodeWorkflow(node, invocation, ctx, cwd, name);
+  if (name === "npx") return recognizeNpx(node, invocation, ctx, cwd, name);
   if (name === "go")
     return recognizeGoWorkflow(node, invocation, ctx, cwd, name);
   if (name === "cargo")

@@ -7,6 +7,12 @@ export type BaselineStatus = "clean" | "dirty" | "absent" | "unknown";
 
 export interface BaselineInspector {
   status(file: string): BaselineStatus;
+  /**
+   * File content as committed at the baseline commit; undefined when the
+   * capability is unavailable or the file is not in the baseline. Optional so
+   * partial inspectors keep workflows that need it fail-closed.
+   */
+  committedText?(file: string): string | undefined;
 }
 
 export interface WorkspaceContext {

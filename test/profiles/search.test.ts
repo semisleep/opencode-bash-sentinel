@@ -23,6 +23,9 @@ describe("search profiles", () => {
     allow("grep -P pattern file");
     allow("rg -a -o pattern src");
     allow("rg --text pattern src");
+    allow("rg -F 'a[bc]' src");
+    allow("grep -F 'x.y' file");
+    allow("rg -Fn pattern src");
     ask("rg -E utf8 pattern");
   });
 

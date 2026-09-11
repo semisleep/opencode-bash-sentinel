@@ -47,10 +47,8 @@ class GitBaseline implements BaselineInspector {
   status(file: string): BaselineStatus {
     if (!withinWorkspace(file, this.workspace)) return "unknown";
     if (!this.baselineRef) return "unknown";
-    const relative = path
-      .relative(this.workspace, file)
-      .replaceAll(path.sep, "/");
-    if (!relative || relative.startsWith("../")) return "unknown";
+    const relative = this.relative(file);
+    if (!relative) return "unknown";
     try {
       execFileSync(
         "git",
@@ -103,5 +101,32 @@ class GitBaseline implements BaselineInspector {
     } catch {
       return "dirty";
     }
+  }
+
+  committedText(file: string): string | undefined {
+    if (!this.baselineRef) return undefined;
+    const relative = this.relative(file);
+    if (!relative) return undefined;
+    try {
+      return execFileSync(
+        "git",
+        ["-C", this.workspace, "show", `${this.baselineRef}:${relative}`],
+        {
+          encoding: "utf8",
+          timeout: 1_000,
+          maxBuffer: 1_000_000,
+        },
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
+  private relative(file: string): string | undefined {
+    if (!withinWorkspace(file, this.workspace)) return undefined;
+    const relative = path
+      .relative(this.workspace, file)
+      .replaceAll(path.sep, "/");
+    return !relative || relative.startsWith("../") ? undefined : relative;
   }
 }

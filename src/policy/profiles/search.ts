@@ -9,7 +9,7 @@ export const SEARCH_NAMES = new Set(["rg", "ripgrep", "grep"]);
 // tool gets its own valueless read-only option set.
 const OPTION_SETS = {
   grep: {
-    short: /^-[nHhIiSsUvVwcClLoEaqxbPrR]+$/,
+    short: /^-[nHFhIiSsUvVwcClLoEaqxbPrR]+$/,
     long: new Set([
       "--count",
       "--line-number",
@@ -26,7 +26,7 @@ const OPTION_SETS = {
     ]),
   },
   default: {
-    short: /^-[anHhIiSsUvVwcClLo]+$/,
+    short: /^-[anFHhIiSsUvVwcClLo]+$/,
     long: new Set([
       "--hidden",
       "--follow",
