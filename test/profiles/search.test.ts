@@ -39,6 +39,11 @@ describe("search profiles", () => {
     ask("rg -B");
     ask("rg -A five pattern file");
     ask("rg --after-context=wide pattern file");
+    ask("rg -C3 pattern file");
+    ask("grep -rA5 pattern file");
+    // Pre-existing quirk: separated -C 2 swallows 2 as the pattern; the
+    // misparse stays read-only -> read-only, so the allow is tolerable.
+    allow("rg -A 3 -C 2 pattern file");
   });
 
   it("supports rg's stdout-only replacement forms", () => {
