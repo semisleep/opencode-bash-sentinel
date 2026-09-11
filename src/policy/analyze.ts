@@ -12,8 +12,8 @@ import {
 } from "./profiles/environment";
 import { recognizeCommand } from "./profiles/registry";
 import { recognizeRedirect } from "./redirect";
-import { isSensitiveTarget } from "./sensitive";
-import { isScratchDescendant, isScratchRoot } from "./scratch";
+import { scratchMutationVerdict, sensitiveVerdict } from "./path-domain";
+import { isScratchRoot } from "./scratch";
 import type {
   DecisionUnit,
   Effect,
@@ -102,11 +102,7 @@ function finalize(
     // over the scratch allowance below: a sensitive read target asks even
     // when every mutation effect in the same unit targets scratch.
     if (
-      resolved.some(
-        (item) =>
-          item.path &&
-          isSensitiveTarget(item.path, ctx.homedir, ctx.extraSensitiveRoots),
-      )
+      resolved.some((item) => item.path && !sensitiveVerdict(item.path, ctx).allow)
     ) {
       allowed = false;
       reason = "sensitive external read";
@@ -119,7 +115,7 @@ function finalize(
         (item) =>
           item.effect.kind === "read" ||
           (item.path !== undefined &&
-            isScratchDescendant(item.path, ctx.scratchRoots ?? [])),
+            scratchMutationVerdict(item.path, ctx).allow),
       )
     ) {
       // All-read external reads keep today's allowance; otherwise the

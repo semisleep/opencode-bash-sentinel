@@ -33,7 +33,7 @@ The following are accepted trust boundaries:
 - a recognized development workflow trusts only its direct declared control files, not hooks, transitive commands, build graphs, or runtime effects;
 - an approved `source` file may alter later shell interpretation; shell state is not simulated;
 - arbitrary environment semantics, network side effects, tool configuration, and concurrent changes between analysis and execution are not modeled;
-- designated scratch roots (ADR-0004) are trusted for external mutation lexically: strict descendants only, no symlink canonicalization, host-supplied and host-shrinkable, and always subordinate to the sensitive-read red line.
+- designated scratch roots (ADR-0004) are trusted for external mutation lexically: strict descendants only, no symlink canonicalization, host-supplied and host-shrinkable, and always subordinate to the sensitive-read red line. The sensitive-root rule and the scratch-mutation rule are gate-shared path-domain rules (ADR-0005): the Bash situation classifier, the edit gate, and the external read path consult the same predicates, so the same effect semantics produce the same verdict on every gate.
 
 These boundaries may be changed only as architecture decisions, not by quietly widening a command profile.
 
@@ -149,7 +149,9 @@ OpenCode's `bash` and `external_directory` requests are independent gates, but b
 
 `external_directory` asks arrive in two shapes. A command-carried ask uses the complete Bash policy. A path-carried ask that positively identifies a read-only tool origin (ADR-0003) follows the outside-workspace read rule: non-sensitive external reads allow, sensitive roots ask, and every unrecognized or write-origin shape asks.
 
-The `edit` permission is a separate path policy and does not enter the Bash three-situation model.
+The `edit` permission is a separate path policy and does not enter the Bash three-situation model: it has no command syntax to recognize and consumes the shared path-domain rules directly (ADR-0005). Workspace containment is evaluated first with a workspace-scoped `.git` red line mirroring situation 1; external edits follow the shared mutation rule — sensitive roots ask, strict scratch descendants (including their `.git` paths) allow, everything else asks.
+
+Gates are independent in input processing but not in rule scope (ADR-0005): each ask is answered on its own at its own gate, and the effect-semantic path rules behind them are defined once. Engine events the plugin does not consume (for example the v2 `permission.v2.asked` family) fail closed to the native dialog.
 
 ## 7. Extension contract
 

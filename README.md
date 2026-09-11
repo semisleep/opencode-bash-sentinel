@@ -45,7 +45,7 @@ The last example asks when that entry file is modified, untracked, committed onl
 
 A finite set of recognized read-only forms is allowed. Recognized writes and unsupported forms require approval. Reads of a small, conservative set of sensitive paths (credential and key stores such as `~/.ssh`, `~/.aws`, `~/.gnupg`) instead ask, so an agent cannot silently spill them into the transcript.
 
-There is one exception for writes: recognized mutations targeting a strict descendant of a designated scratch root (ADR-0004) allow. The default list is the host's system temp directories (`/tmp`, `/private/tmp` on macOS, and the resolved `TMPDIR`); deleting or moving a scratch root itself still asks, and sensitive reads still ask even when the write side is scratch.
+There is one exception for writes: recognized mutations targeting a strict descendant of a designated scratch root allow. The default list is the host's system temp directories (`/tmp`, `/private/tmp` on macOS, and the resolved `TMPDIR`); deleting or moving a scratch root itself still asks, and sensitive reads still ask even when the write side is scratch.
 
 ```bash
 cat /etc/hosts       # allow
@@ -85,13 +85,13 @@ These are trust boundaries, not claims of complete safety.
 
 ## File-edit permission
 
-The OpenCode `edit` permission uses a separate path rule: ordinary resolved workspace paths allow; `.git`, external, and unresolved paths ask. Editing a script is allowed, while later execution is evaluated by the script red line.
+The OpenCode `edit` permission follows the same path rules as the Bash gate's write side: ordinary resolved workspace paths allow; in-workspace `.git` paths, sensitive roots, and unresolved paths ask; external edits allow only as strict descendants of a designated scratch root (including their `.git` paths), while scratch roots themselves and every other external path ask. Editing a script is allowed, while later execution is evaluated by the script red line. `scratchPaths: false` disables the scratch allowance for both the Bash and edit gates.
 
 ## OpenCode behavior
 
-The `bash` and `external_directory` permissions are independent OpenCode gates, but Sentinel applies the same complete Bash policy to both. Sentinel replies `once` only for allowed requests; otherwise it leaves the native dialog unanswered so the user decides.
+The `bash` and `external_directory` permissions are independent OpenCode gates, but Sentinel applies the same complete Bash policy to both, and every gate consults the same path rules: one rule table for external reads and external mutations, consumed by the Bash situation classifier, the edit gate, and the external read path alike. Sentinel replies `once` only for allowed requests; otherwise it leaves the native dialog unanswered so the user decides.
 
-Path-tool `external_directory` asks (for example from the `read` or `glob` tools) follow the same outside-workspace read rule when their payload positively identifies a read-only origin: non-sensitive external paths allow, sensitive roots ask, and write-origin or unrecognized shapes stay with the native dialog (ADR-0003).
+Path-tool `external_directory` asks (for example from the `read` or `glob` tools) follow the same outside-workspace read rule when their payload positively identifies a read-only origin: non-sensitive external paths allow, sensitive roots ask, and write-origin or unrecognized shapes stay with the native dialog.
 
 This origin identification is payload-based rather than an upstream contract — it was derived from the OpenCode 1.18.29 implementation and must be re-verified when the supported engine range changes. If a future engine changes these ask shapes, external read approvals revert to prompts (fail-closed). With `audit` enabled, every unanswered `external_directory` ask — including the edit family — is logged with its metadata shape, so such drift is visible in the audit log instead of silent.
 

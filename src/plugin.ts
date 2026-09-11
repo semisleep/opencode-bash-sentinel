@@ -9,9 +9,12 @@ import {
 } from "./alert"
 import { analyzeCommandPolicy, type DangerousVerdict, type PolicyDecision, type PolicyGate } from "./policy-engine"
 import {
+  scratchMutationVerdict,
+  sensitiveVerdict,
+} from "./policy/path-domain"
+import {
   defaultWorkspaceContext,
   hasGitSegment,
-  isSensitiveTarget,
   stripTrailingSeparators,
   withinWorkspace,
 } from "./workspace-policy"
@@ -31,6 +34,8 @@ export interface BashSentinelOptions {
 }
 
 const DEFAULT_LOG_PATH = "~/.local/share/opencode/bash-sentinel-audit.jsonl"
+
+const auditTails = new Map<string, Promise<void>>()
 
 type AskedEvent = {
   id: string
@@ -147,11 +152,7 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
       }
       return
     }
-    const sensitive = isSensitiveTarget(
-      filepath,
-      ctx.homedir,
-      ctx.extraSensitiveRoots,
-    )
+    const sensitive = !sensitiveVerdict(filepath, ctx).allow
     if (config.audit) {
       void writeAudit(
         config.logPath,
@@ -184,10 +185,20 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     const filepath = readFilepath(request)
     if (typeof filepath !== "string" || filepath.length === 0) return
 
-    const verdict: DangerousVerdict | undefined =
-      hasGitSegment(filepath) === true
+    // ADR-0005: workspace containment is evaluated first (a workspace nested
+    // under a scratch root keeps situation-1 semantics), the `.git` red line
+    // is workspace-scoped, and external edits follow the shared mutation
+    // rule with the sensitive red line evaluated first.
+    const verdict: DangerousVerdict | undefined = withinWorkspace(
+      filepath,
+      ctx.workspace,
+    )
+      ? hasGitSegment(filepath) === true
         ? { kind: "dangerous", command: "edit: .git path" }
-        : withinWorkspace(filepath, ctx.workspace)
+        : undefined
+      : !sensitiveVerdict(filepath, ctx).allow
+        ? { kind: "dangerous", command: "edit: sensitive path" }
+        : scratchMutationVerdict(filepath, ctx).allow
           ? undefined
           : { kind: "dangerous", command: "edit: outside workspace" }
 
@@ -426,9 +437,20 @@ async function writeAudit(
         reason,
         action,
       }) + "\n"
-    const fs = await import("fs/promises")
-    await fs.mkdir(dirname(resolved), { recursive: true })
-    await fs.appendFile(resolved, line, "utf8")
+    // Serialize per log path: rapid-fire asks must not interleave their
+    // append writes out of submission order (audit ordering is relied on
+    // for drift analysis).
+    const write = async () => {
+      const fs = await import("fs/promises")
+      await fs.mkdir(dirname(resolved), { recursive: true })
+      await fs.appendFile(resolved, line, "utf8")
+    }
+    const tail = (auditTails.get(resolved) ?? Promise.resolve()).then(
+      write,
+      write,
+    )
+    auditTails.set(resolved, tail.catch(() => {}))
+    await tail
   } catch {
     // Auditing must never break the approval flow.
   }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { BashSentinelPlugin } from "../src/plugin"
+import { analyzeWorkspacePolicy } from "../src/workspace-policy"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import { clearAlert, fireAlert } from "../src/alert"
 import { execFileSync } from "node:child_process"
@@ -445,6 +446,109 @@ describe("edit gate", () => {
       askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/src/app.ts` } }),
     )
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("scratch descendants approve and the root itself escalates (ADR-0005)", async () => {
+    const hooks = await makePlugin()
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/sentinel-probe.ts" } }),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fetchMock.mockClear()
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/tmp" } }),
+    )
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/etc/hosts" } }),
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("scratch .git paths approve while workspace .git still escalates", async () => {
+    const hooks = await makePlugin()
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/checkout/.git/config" } }),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fetchMock.mockClear()
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/.git/config` } }),
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("sensitive external edits escalate even under a scratch root", async () => {
+    const hooks = await makePlugin({ sensitivePaths: ["/srv/secret"], scratchPaths: ["/srv"] })
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/srv/secret/key" } }),
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("scratchPaths: false restores the pre-ADR-0005 edit gate", async () => {
+    const hooks = await makePlugin({ scratchPaths: false })
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/sentinel-probe.ts" } }),
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe("cross-gate consistency matrix (ADR-0005)", () => {
+  const analyzerCtx = {
+    workspace: WORKSPACE,
+    cwd: WORKSPACE,
+    homedir: "/home/dev",
+    baseline: { status: () => "clean" as const },
+    extraSensitiveRoots: ["/srv/secret"],
+    scratchRoots: ["/tmp", "/private/tmp"],
+  }
+  const rows: Array<{
+    path: string
+    read: "allow" | "ask"
+    mutate: "allow" | "ask"
+    editReplies: boolean
+    readOriginReplies: boolean
+  }> = [
+    { path: `${WORKSPACE}/src/app.ts`, read: "allow", mutate: "allow", editReplies: true, readOriginReplies: true },
+    { path: `${WORKSPACE}/.git/config`, read: "allow", mutate: "ask", editReplies: false, readOriginReplies: true },
+    { path: "/tmp/matrix-probe.ts", read: "allow", mutate: "allow", editReplies: true, readOriginReplies: true },
+    { path: "/tmp/co/.git/config", read: "allow", mutate: "allow", editReplies: true, readOriginReplies: true },
+    { path: "/tmp", read: "allow", mutate: "ask", editReplies: false, readOriginReplies: true },
+    { path: "/srv/secret/key", read: "ask", mutate: "ask", editReplies: false, readOriginReplies: false },
+    { path: "/etc/hosts", read: "allow", mutate: "ask", editReplies: false, readOriginReplies: true },
+    { path: "/srv/ordinary.txt", read: "allow", mutate: "ask", editReplies: false, readOriginReplies: true },
+  ]
+
+  it("the edit gate and read-origin asks agree with the Bash verdicts per path class", async () => {
+    const hooks = await makePlugin({ sensitivePaths: ["/srv/secret"] })
+    for (const { path, read, mutate, editReplies, readOriginReplies } of rows) {
+      expect(
+        analyzeWorkspacePolicy(`cat ${path}`, analyzerCtx).action,
+        `bash read ${path}`,
+      ).toBe(read)
+      expect(
+        analyzeWorkspacePolicy(`strings /bin/ls > ${path}`, analyzerCtx).action,
+        `bash mutate ${path}`,
+      ).toBe(mutate)
+      fetchMock.mockClear()
+      await emit(hooks, askedEvent({ permission: "edit", metadata: { filepath: path } }))
+      expect(fetchMock.mock.calls.length > 0, `edit gate ${path}`).toBe(editReplies)
+      fetchMock.mockClear()
+      await emit(
+        hooks,
+        askedEvent({ permission: "external_directory", metadata: { filepath: path } }),
+      )
+      expect(fetchMock.mock.calls.length > 0, `read-origin ask ${path}`).toBe(readOriginReplies)
+      fetchMock.mockClear()
+    }
   })
 })
 
