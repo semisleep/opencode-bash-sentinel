@@ -39,32 +39,74 @@ const OPTION_SETS = {
   },
 } as const;
 
+// A shell pathname glob is acceptable as a read operand only when a literal
+// path component precedes every wildcard: each expanded element then starts
+// with that literal prefix, so the tool can never reparse a matched filename
+// (for example `--pre=...`) as an option. Expansion, brace, and extglob
+// material is refused, and the read conservatively covers the literal
+// directory prefix, which classifies like any other read operand.
+function globReadTarget(raw: string): string | undefined {
+  if (raw.startsWith("-")) return;
+  if (/[$`{}()\\'"\s;&|<>!^]/.test(raw)) return;
+  const wildcard = raw.search(/[*?\[]/);
+  if (wildcard < 0) return;
+  const slash = raw.lastIndexOf("/", wildcard);
+  if (slash < 0) return;
+  return raw.slice(0, slash + 1);
+}
+
+type Entry = { literal: string } | { glob: string };
+
+function operand(entry: Entry) {
+  return "literal" in entry ? entry.literal : entry.glob;
+}
+
+function literalAt(args: Entry[], index: number): string | undefined {
+  const entry = args[index];
+  return entry && "literal" in entry ? entry.literal : undefined;
+}
+
 export function recognizeSearch(
   node: SyntaxNode,
   invocation: Invocation,
   name: string,
 ): UnitSeed {
-  const args = invocation.args.map((argument) => argument.literal);
-  if (args.some((argument) => argument === undefined))
+  const parsed: (Entry | undefined)[] = invocation.args.map((argument) => {
+    if (argument.literal !== undefined) return { literal: argument.literal };
+    const glob = globReadTarget(argument.raw);
+    return glob === undefined ? undefined : { glob };
+  });
+  if (parsed.some((entry) => entry === undefined))
     return unsupported(node, `dynamic ${name}`);
+  const args = parsed as Entry[];
   const paths: string[] = [];
   let hasPattern = false;
   let filesMode = false;
-  const values = args as string[];
-  for (let index = 0; index < values.length; index++) {
-    const value = values[index]!;
+  for (let index = 0; index < args.length; index++) {
+    const entry = args[index]!;
+    if (!("literal" in entry)) {
+      // A glob is safe only as a path operand, never as the pattern.
+      if (!hasPattern && !filesMode)
+        return unsupported(node, `dynamic ${name} pattern`);
+      paths.push(entry.glob);
+      continue;
+    }
+    const value = entry.literal;
     if (value === "--") {
+      const tail = args.slice(index + 1);
       if (filesMode) {
-        paths.push(...values.slice(index + 1));
+        paths.push(...tail.map(operand));
         break;
       }
       if (!hasPattern) {
-        if (!values[index + 1])
+        const next = tail[0];
+        if (!next || !("literal" in next) || !next.literal)
           return unsupported(node, `missing ${name} pattern`);
         hasPattern = true;
-        index++;
+        paths.push(...tail.slice(1).map(operand));
+        break;
       }
-      paths.push(...values.slice(index + 1));
+      paths.push(...tail.map(operand));
       break;
     }
     if (!hasPattern && value.startsWith("-")) {
@@ -75,7 +117,7 @@ export function recognizeSearch(
         continue;
       }
       if (["-e", "--regexp", "-g", "--glob", "-t", "--type"].includes(value)) {
-        if (!values[++index])
+        if (!literalAt(args, ++index))
           return unsupported(node, `missing ${name} option value`);
         if (value === "-e" || value === "--regexp") hasPattern = true;
         continue;
@@ -89,7 +131,7 @@ export function recognizeSearch(
         value === "--after-context" ||
         value === "--before-context"
       ) {
-        if (!/^\d+$/.test(values[++index] ?? ""))
+        if (!/^\d+$/.test(literalAt(args, ++index) ?? ""))
           return unsupported(node, `unsupported ${name} option`);
         continue;
       }
@@ -98,7 +140,7 @@ export function recognizeSearch(
       // valueless recursion and stays in grep's cluster set below.
       if (name !== "grep") {
         if (value === "-r" || value === "--replace") {
-          if (!values[++index])
+          if (!literalAt(args, ++index))
             return unsupported(node, `missing ${name} option value`);
           continue;
         }

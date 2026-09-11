@@ -67,4 +67,45 @@ describe("search profiles", () => {
     ask("grep --follow pattern file");
     ask("grep --no-heading pattern file");
   });
+
+  it("allows shell glob path operands behind a literal component", () => {
+    allow("rg -n pattern src/*.ts");
+    allow("rg -n pattern src/server/[a-c]?.ts");
+    allow("grep -rn pattern src/**/*.ts");
+    allow("rg pattern -- src/*.ts test/*.md");
+    allow("rg --files src/*.ts");
+    allow("rg -n pattern ../*.ts");
+    allow("rg pattern /etc/*.conf");
+    allow("rg pattern ~/*.ts");
+    expect(decision("rg pattern /etc/*.conf").units[0]?.situation).toBe(
+      "workspace-outside",
+    );
+    expect(decision("rg -n pattern src/*.ts").units[0]?.situation).toBe(
+      "workspace-inside",
+    );
+  });
+
+  it("keeps asking for unsafe or dynamic glob forms", () => {
+    // A wildcard in the first component can expand to a leading-dash
+    // filename that the tool would reparse as an option.
+    ask("rg -n pattern *.ts");
+    ask("rg -n pattern a*.ts");
+    ask("rg -n pattern -*.ts");
+    ask("rg *.ts src");
+    // Globs are never safe as the pattern or an option value.
+    ask("rg -- *.ts");
+    ask("rg -g *.ts pattern src");
+    // Expansion, brace, and extglob material stays dynamic.
+    ask("rg -n pattern src/$dir/*.ts");
+    ask("rg -n pattern {src,test}/*.ts");
+    ask("rg -n pattern @(src|test)/*.ts");
+    // The resolved prefix is still subject to the sensitive red line.
+    ask("rg pattern ~/.ssh/*.pub");
+  });
+
+  it("allows the composed glob-search shape end to end", () => {
+    allow(
+      'rg -n "processCustomerRelationshipsUpdate" src/domain/customer-management/server/*.ts | head -5; echo ---; rg -ln "status.*valid|\'valid\'" src/domain/customer-management/server/ | head',
+    );
+  });
 });
