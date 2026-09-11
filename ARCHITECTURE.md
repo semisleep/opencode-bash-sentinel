@@ -146,6 +146,8 @@ Equality and ancestor/descendant containment count as overlap. This comparison i
 
 OpenCode's `bash` and `external_directory` requests are independent gates, but both must use the same complete Bash policy. Neither is a relaxed path. Approval at one gate does not approve the other.
 
+`external_directory` asks arrive in two shapes. A command-carried ask uses the complete Bash policy. A path-carried ask that positively identifies a read-only tool origin (ADR-0003) follows the outside-workspace read rule: non-sensitive external reads allow, sensitive roots ask, and every unrecognized or write-origin shape asks.
+
 The `edit` permission is a separate path policy and does not enter the Bash three-situation model.
 
 ## 7. Extension contract

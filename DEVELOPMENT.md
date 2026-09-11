@@ -101,6 +101,7 @@ git diff --check
 Integration assumptions currently verified against OpenCode 1.18.29 include:
 
 - command text is read from `event.properties.metadata.command`, with the older `metadata.input.command` fallback;
+- `external_directory` asks arrive in three shapes: bash-origin asks carry `metadata.command` (complete Bash policy); read-only path tools (`read`, `glob`, `list`) carry a concrete `metadata.filepath` with `parentDir` and follow the ADR-0003 read rule; the v2 edit family (`edit`/`write`/`patch`) carries empty metadata and is deliberately left unanswered. Re-verify these shapes when changing the supported engine range, because the origin identification is payload-based, not an explicit tool field;
 - the plugin observes `permission.asked` and replies programmatically;
 - a successful automatic approval replies `once`;
 - human/plugin reply races may yield a benign not-found result;

@@ -316,6 +316,41 @@ describe("external_directory gate", () => {
     await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts" } }))
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  it("path-originated read asks follow the outside-workspace read rule (ADR-0003)", async () => {
+    const hooks = await makePlugin()
+    const home = os.homedir()
+    // read-tool ask, external non-sensitive -> approve
+    await emit(
+      hooks,
+      askedEvent({ permission: "external_directory", metadata: { filepath: "/etc/hosts", parentDir: "/etc" } }),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fetchMock.mockClear()
+    // glob-tool ask, directory-shaped external non-sensitive -> approve
+    await emit(
+      hooks,
+      askedEvent({ permission: "external_directory", metadata: { filepath: "/tmp", parentDir: "/tmp" } }),
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    fetchMock.mockClear()
+    // sensitive read -> stays with the human
+    await emit(
+      hooks,
+      askedEvent({
+        permission: "external_directory",
+        metadata: { filepath: path.join(home, ".ssh", "id_rsa") },
+      }),
+    )
+    // glob metacharacters -> unresolvable, stays with the human
+    await emit(
+      hooks,
+      askedEvent({ permission: "external_directory", metadata: { filepath: "/etc/*" } }),
+    )
+    // edit-family ask (empty metadata) -> external writes keep asking
+    await emit(hooks, askedEvent({ permission: "external_directory", metadata: {} }))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })
 
 describe("edit gate", () => {

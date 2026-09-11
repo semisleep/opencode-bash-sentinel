@@ -84,6 +84,8 @@ The OpenCode `edit` permission uses a separate path rule: ordinary resolved work
 
 The `bash` and `external_directory` permissions are independent OpenCode gates, but Sentinel applies the same complete Bash policy to both. Sentinel replies `once` only for allowed requests; otherwise it leaves the native dialog unanswered so the user decides.
 
+Path-tool `external_directory` asks (for example from the `read` or `glob` tools) follow the same outside-workspace read rule when their payload positively identifies a read-only origin: non-sensitive external paths allow, sensitive roots ask, and write-origin or unrecognized shapes stay with the native dialog (ADR-0003).
+
 - OpenCode `deny` rules take precedence.
 - Session-scoped “always allow” answers bypass later Sentinel analysis.
 - `--auto` mode already approves everything and makes Sentinel unnecessary.

@@ -8,7 +8,12 @@ import {
   type AlertConfig,
 } from "./alert"
 import { analyzeCommandPolicy, type DangerousVerdict, type PolicyDecision, type PolicyGate } from "./policy-engine"
-import { defaultWorkspaceContext, hasGitSegment, withinWorkspace } from "./workspace-policy"
+import {
+  defaultWorkspaceContext,
+  hasGitSegment,
+  isSensitiveTarget,
+  withinWorkspace,
+} from "./workspace-policy"
 
 export interface BashSentinelOptions {
   audit?: boolean
@@ -86,23 +91,62 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
 
   async function handleExternal(request: AskedEvent): Promise<void> {
     const command = readCommand(request)
-    if (typeof command !== "string" || command.length === 0) return
-
-    const decision = policyDecision(command, "external_directory")
-    if (decision.action === "ask") {
-      if (config.audit) {
-        void writeAudit(config.logPath, command, decision.verdict, "escalate", "external_directory", decision.reason)
+    if (typeof command === "string" && command.length > 0) {
+      const decision = policyDecision(command, "external_directory")
+      if (decision.action === "ask") {
+        if (config.audit) {
+          void writeAudit(config.logPath, command, decision.verdict, "escalate", "external_directory", decision.reason)
+        }
+        if (config.alert) fireAlert(config.alert)
+        return
       }
-      if (config.alert) fireAlert(config.alert)
+
+      if (config.audit) void writeAudit(config.logPath, command, undefined, "approve", "external_directory")
+      try {
+        await replyOnce(request)
+      } catch {
+        // Same race semantics as bash replies.
+      }
       return
     }
 
-    if (config.audit) void writeAudit(config.logPath, command, undefined, "approve", "external_directory")
+    // ADR-0003: path-originated asks. Only the read-only tools (read, glob,
+    // list) carry a concrete `metadata.filepath` (verified against opencode
+    // 1.18.29); the edit family arrives with empty metadata and stays with
+    // the native dialog so external writes keep asking at every gate.
+    const filepath = readExternalPath(request)
+    if (!filepath) return
+    const sensitive = isSensitiveTarget(
+      filepath,
+      ctx.homedir,
+      ctx.extraSensitiveRoots,
+    )
+    if (config.audit) {
+      void writeAudit(
+        config.logPath,
+        filepath,
+        sensitive ? { kind: "dangerous", command: "external read: sensitive path" } : undefined,
+        sensitive ? "escalate" : "approve",
+        "external_directory",
+        sensitive ? "sensitive external read" : undefined,
+      )
+    }
+    if (sensitive) {
+      if (config.alert) fireAlert(config.alert)
+      return
+    }
     try {
       await replyOnce(request)
     } catch {
       // Same race semantics as bash replies.
     }
+  }
+
+  function readExternalPath(request: AskedEvent): string | undefined {
+    const raw = request.metadata?.filepath
+    if (typeof raw !== "string" || raw.length === 0) return
+    if (/[*?[\]{}]/.test(raw)) return
+    return path.resolve(ctx.workspace, raw)
   }
 
   async function handleEdit(request: AskedEvent): Promise<void> {
