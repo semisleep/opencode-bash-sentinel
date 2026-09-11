@@ -1,7 +1,8 @@
 # ADR-0005: Effect-semantic path rules shared by every permission gate
 
-- Status: accepted (decision points confirmed 2026-09-11; implementation
-  pending the payload re-verification precondition below)
+- Status: accepted (decision points confirmed 2026-09-11; edit-gate half
+  implemented same day; write-origin half deferred per the verification
+  outcome below)
 - Date: 2026-09-11
 - Supersedes: none; generalizes ADR-0003 (read-side unification) and
   ADR-0004 (scratch roots), and subsumes the edit-gate gap those two left.
@@ -211,8 +212,8 @@ enforcement of this ADR — a cross-gate consistency contract test):
 | --- | --- | --- | --- | --- | --- |
 | in-workspace file | allow | allow | allow | allow | n/a |
 | in-workspace `.git` file | allow | ask | allow | ask | n/a |
-| scratch strict descendant | allow | allow | allow | **allow** (new) | **allow** (new) |
-| scratch `.git` file | allow | allow | allow | **allow** (new, relaxed) | **allow** (new) |
+| scratch strict descendant | allow | allow | allow | **allow** (new) | deferred (v2 channel) |
+| scratch `.git` file | allow | allow | allow | **allow** (new, relaxed) | deferred (v2 channel) |
 | scratch root itself | allow | ask | allow | ask | ask |
 | sensitive root | ask | ask | ask | ask | ask |
 | `/etc` non-sensitive file | allow | ask | allow | ask | ask |
@@ -250,5 +251,8 @@ the edit side, keeping ADR-0004's Bash decision; (2) fold write-origin
 `external_directory` asks into the shared rule table, subject to the
 payload re-verification precondition; (3) the effect-semantic
 synchronization principle itself, including the shared-list default-on
-consequence. Implementation proceeds after the precondition's shape
-verification lands.
+consequence. The shape verification landed the same day (see the
+verification outcome above): the shared rule module, the Bash call-site
+rewiring, and the edit gate shipped; the write-origin half is deferred
+until the plugin consumes the v2 ask channel, and that deferral is the
+recorded scope reduction the precondition anticipated.

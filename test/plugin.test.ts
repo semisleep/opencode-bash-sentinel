@@ -499,6 +499,64 @@ describe("edit gate", () => {
     )
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  it("audit lines pin the edit-gate reason strings", async () => {
+    const logPath = path.join(
+      os.tmpdir(),
+      `sentinel-edit-${process.pid}-${Date.now()}.jsonl`,
+    )
+    const hooks = await makePlugin({
+      audit: true,
+      logPath,
+      sensitivePaths: ["/srv/secret"],
+    })
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/sentinel-probe.ts" } }),
+    )
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/co/.git/config" } }),
+    )
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/.git/config` } }),
+    )
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/etc/hosts" } }),
+    )
+    await emit(
+      hooks,
+      askedEvent({ permission: "edit", metadata: { filepath: "/srv/secret/key" } }),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const fs = await import("fs/promises")
+    const lines = (await fs.readFile(logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+    expect(lines).toHaveLength(5)
+    expect(lines[0]).toMatchObject({ action: "approve", verdict: "safe" })
+    expect(lines[1]).toMatchObject({ action: "approve", verdict: "safe" })
+    expect(lines[2]).toMatchObject({
+      action: "escalate",
+      verdict: "dangerous",
+      detail: "edit: .git path",
+    })
+    expect(lines[3]).toMatchObject({
+      action: "escalate",
+      verdict: "dangerous",
+      detail: "edit: outside workspace",
+    })
+    expect(lines[4]).toMatchObject({
+      action: "escalate",
+      verdict: "dangerous",
+      detail: "edit: sensitive path",
+    })
+    await fs.rm(logPath)
+  })
 })
 
 describe("cross-gate consistency matrix (ADR-0005)", () => {
