@@ -30,6 +30,8 @@ const FLAGS: Record<string, Set<string>> = {
   diff: new Set([
     "--",
     "--stat",
+    "--pickaxe-regex",
+    "--pickaxe-all",
     "--name-only",
     "--name-status",
     "--cached",
@@ -44,6 +46,8 @@ const FLAGS: Record<string, Set<string>> = {
     "--",
     "--oneline",
     "--stat",
+    "--pickaxe-regex",
+    "--pickaxe-all",
     "--name-only",
     "--name-status",
     "--decorate",
@@ -54,6 +58,8 @@ const FLAGS: Record<string, Set<string>> = {
   show: new Set([
     "--",
     "--stat",
+    "--pickaxe-regex",
+    "--pickaxe-all",
     "--name-only",
     "--name-status",
     "--oneline",
@@ -142,16 +148,39 @@ function rejected(text: string, reason: string) {
 function validArguments(subcommand: string, args: string[]) {
   if (subcommand === "commit") return commitArguments(args);
   if (subcommand === "fetch") return fetchArguments(args);
+  if (subcommand === "log" || subcommand === "show" || subcommand === "diff")
+    return historyArguments(subcommand, args);
   const allowed = FLAGS[subcommand];
   if (!allowed) return false;
   return args.every(
     (argument) =>
       !argument.startsWith("-") ||
       allowed.has(argument) ||
-      ((subcommand === "log" || subcommand === "show") &&
-        (/^-\d+$/.test(argument) || argument.startsWith("--max-count="))) ||
       (subcommand === "status" && argument.startsWith("--untracked-files=")),
   );
+}
+
+function historyArguments(subcommand: string, args: string[]) {
+  const allowed = FLAGS[subcommand];
+  if (!allowed) return false;
+  const countForms = subcommand === "log" || subcommand === "show";
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index]!;
+    if (argument === "-S" || argument === "-G") {
+      if (!args[++index]) return false;
+      continue;
+    }
+    if (/^-S./.test(argument) || /^-G./.test(argument)) continue;
+    if (
+      !argument.startsWith("-") ||
+      allowed.has(argument) ||
+      (countForms &&
+        (/^-\d+$/.test(argument) || argument.startsWith("--max-count=")))
+    )
+      continue;
+    return false;
+  }
+  return true;
 }
 
 function commitArguments(args: string[]) {

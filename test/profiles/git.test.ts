@@ -31,4 +31,23 @@ describe("git profile", () => {
     ask("git fetch custom://example.com/repo");
     ask("git fetch --all origin");
   });
+
+  it("allows read-only pickaxe inspection on history subcommands", () => {
+    allow("git log --oneline -S '\"--stat\"' -- src/plugin.ts");
+    allow("git log -Sfoo --oneline");
+    allow("git log -G needle --oneline -- src/plugin.ts");
+    allow("git diff -S token");
+    allow("git show -Gneedle HEAD");
+    allow("git log --pickaxe-regex -S foo --oneline");
+    allow("git diff --pickaxe-all -S token");
+    allow("git log -S --stat --oneline");
+    allow("git log --pickaxe-regex");
+    ask("git log -S");
+    ask("git log -G");
+    ask("git commit -S keyid -m x");
+    ask("git add -S x");
+    ask("git status -S x");
+    ask("git fetch -S x");
+    ask("git log -s");
+  });
 });
