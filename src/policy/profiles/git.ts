@@ -28,6 +28,7 @@ const FLAGS: Record<string, Set<string>> = {
     "--no-renames",
   ]),
   diff: new Set([
+    "--",
     "--stat",
     "--name-only",
     "--name-status",
@@ -40,6 +41,7 @@ const FLAGS: Record<string, Set<string>> = {
     "--no-textconv",
   ]),
   log: new Set([
+    "--",
     "--oneline",
     "--stat",
     "--name-only",
@@ -50,6 +52,7 @@ const FLAGS: Record<string, Set<string>> = {
     "--no-merges",
   ]),
   show: new Set([
+    "--",
     "--stat",
     "--name-only",
     "--name-status",

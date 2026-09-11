@@ -26,7 +26,7 @@ const OPTION_SETS = {
     ]),
   },
   default: {
-    short: /^-[nHhIiSsUvVwcClLo]+$/,
+    short: /^-[anHhIiSsUvVwcClLo]+$/,
     long: new Set([
       "--hidden",
       "--follow",
@@ -34,6 +34,7 @@ const OPTION_SETS = {
       "--line-number",
       "--no-heading",
       "--fixed-strings",
+      "--text",
     ]),
   },
 } as const;

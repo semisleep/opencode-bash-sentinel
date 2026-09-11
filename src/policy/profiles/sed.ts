@@ -2,7 +2,7 @@ import type { SyntaxNode } from "../../parser/node";
 import type { Invocation, UnitSeed } from "../types";
 import { pathEffects, unsupported } from "./helpers";
 
-/** A deliberately finite profile: substitution programs only. */
+/** A deliberately finite profile: substitution and address-print programs. */
 export function recognizeSed(
   node: SyntaxNode,
   invocation: Invocation,
@@ -38,7 +38,11 @@ export function recognizeSed(
     else files.push(value);
   }
   if (programs.length === 0) return unsupported(node, "missing sed program");
-  if (!programs.every(safeSubstitution))
+  if (
+    !programs.every(
+      (program) => safeSubstitution(program) || safePrintProgram(program),
+    )
+  )
     return unsupported(node, "unsupported sed program");
   return files.length
     ? pathEffects(node, files, writesInPlace ? "write" : "read", "sed")
@@ -61,6 +65,10 @@ function safeSubstitution(program: string) {
   if (replacementEnd < 0) return false;
   const flags = program.slice(replacementEnd + 1);
   return flags === "" || /^(?:[gIpM]|[0-9])+$/.test(flags);
+}
+
+function safePrintProgram(program: string) {
+  return /^(?:\d+|\$)?(?:,(?:\d+|\$))?p$/.test(program);
 }
 
 function sectionEnd(program: string, start: number, delimiter: string) {

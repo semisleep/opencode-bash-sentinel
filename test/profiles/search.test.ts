@@ -21,8 +21,11 @@ describe("search profiles", () => {
     allow('grep -iE "a|b" file');
     allow("grep -Erqxb pattern file");
     allow("grep -P pattern file");
+    allow("rg -a -o pattern src");
+    allow("rg --text pattern src");
     ask("rg -E utf8 pattern");
     ask("rg -r replacement pattern file");
+    ask("rg -A 5 pattern file");
     ask("grep -A 5 pattern file");
   });
 

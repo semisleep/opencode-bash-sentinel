@@ -12,6 +12,7 @@ const INFORMATION_FORMS: Record<string, RegExp> = {
   lscpu: /^(?: -[abcepJ])*$/,
   ps: /^(?: (?:aux|[aux]|-[aefx]))*$/,
   pwd: /^(?: -[LP])?$/,
+  which: /^(?: -a)?(?: [^-\s][^\s]*)*$/,
   true: /^$/,
   false: /^$/,
   ":": /^$/,

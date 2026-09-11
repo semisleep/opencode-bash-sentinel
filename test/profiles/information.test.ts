@@ -16,6 +16,9 @@ describe("information profiles", () => {
       "lscpu -a -J",
       "ps aux",
       "pwd -P",
+      "which",
+      "which opencode",
+      "which -a python3",
       "true",
       "false",
       ":",
@@ -33,6 +36,8 @@ describe("information profiles", () => {
     ask("nproc --ignore nope");
     ask("lscpu --json");
     ask("pwd --logical");
+    ask("which --all");
+    ask("which -s python");
     ask("true extra");
     ask(": extra");
     ask("uname $FLAGS");
