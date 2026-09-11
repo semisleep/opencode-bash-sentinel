@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { BashSentinelPlugin } from "../src/plugin"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
+import { clearAlert, fireAlert } from "../src/alert"
 import { execFileSync } from "node:child_process"
 import {
   appendFileSync,
@@ -11,6 +12,11 @@ import {
 } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+
+vi.mock("../src/alert", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/alert")>()
+  return { ...actual, fireAlert: vi.fn(), clearAlert: vi.fn() }
+})
 
 type FetchMock = ReturnType<typeof vi.fn>
 
@@ -371,6 +377,26 @@ describe("other events are ignored", () => {
     await emit(hooks, { type: "permission.replied", properties: {} })
     await emit(hooks, askedEvent({ permission: "webfetch" }))
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe("alert hooks", () => {
+  it("escalations alert and replies clear the mark", async () => {
+    const hooks = await makePlugin({ alert: { sound: true, mark: true } })
+    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /" } }))
+    expect(vi.mocked(fireAlert)).toHaveBeenCalledTimes(1)
+    await emit(hooks, askedEvent()) // git status is auto-approved
+    expect(vi.mocked(fireAlert)).toHaveBeenCalledTimes(1)
+    await emit(hooks, { type: "permission.replied", properties: {} })
+    expect(vi.mocked(clearAlert)).toHaveBeenCalledTimes(1)
+  })
+
+  it("never alerts without the option", async () => {
+    const hooks = await makePlugin()
+    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /" } }))
+    await emit(hooks, { type: "permission.replied", properties: {} })
+    expect(vi.mocked(fireAlert)).not.toHaveBeenCalled()
+    expect(vi.mocked(clearAlert)).not.toHaveBeenCalled()
   })
 })
 

@@ -133,6 +133,7 @@ The `edit` route is optional but recommended for consistent workspace and `.git`
 | `audit` | `false` | Append one JSONL line per decision |
 | `logPath` | `~/.local/share/opencode/bash-sentinel-audit.jsonl` | Audit-log destination |
 | `sensitivePaths` | `[]` | Extra sensitive-read roots, unioned with the built-in defaults (additive only) |
+| `alert` | `false` | `true`, or `{ "sound": true, "mark": true }` per channel. `sound` also accepts a sound-file path. `mark` colors the iTerm2 tab chrome, shows a blinking red tab dot, and bounces the dock icon once; it clears when the permission is replied. Other terminals ignore the mark sequences |
 
 ## Development and provenance
 

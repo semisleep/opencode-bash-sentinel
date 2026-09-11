@@ -1,6 +1,12 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import os from "node:os"
 import path from "node:path"
+import {
+  clearAlert,
+  fireAlert,
+  parseAlertOption,
+  type AlertConfig,
+} from "./alert"
 import { analyzeCommandPolicy, type DangerousVerdict, type PolicyDecision, type PolicyGate } from "./policy-engine"
 import { defaultWorkspaceContext, hasGitSegment, withinWorkspace } from "./workspace-policy"
 
@@ -9,6 +15,11 @@ export interface BashSentinelOptions {
   logPath?: string
   /** Additional sensitive-read roots, unioned with the ADR-0002 defaults. */
   sensitivePaths?: string[]
+  /** Escalation alerts: sound plus an iTerm2 tab mark, cleared on reply. */
+  alert?: boolean | {
+    sound?: boolean | string
+    mark?: boolean
+  }
 }
 
 const DEFAULT_LOG_PATH = "~/.local/share/opencode/bash-sentinel-audit.jsonl"
@@ -39,6 +50,10 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
       // server forwards every event as `{ id, type, properties }`), so widen
       // before switching on the type.
       const { type, properties } = event as { type: string; properties: unknown }
+      if (type === "permission.replied") {
+        if (config.alert) clearAlert(config.alert)
+        return
+      }
       if (type !== "permission.asked") return
       const request = properties as AskedEvent
 
@@ -55,6 +70,7 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     const decision = policyDecision(command, "bash")
     if (decision.action === "ask") {
       if (config.audit) void writeAudit(config.logPath, command, decision.verdict, "escalate", "bash", decision.reason)
+      if (config.alert) fireAlert(config.alert)
       return
     }
 
@@ -77,6 +93,7 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
       if (config.audit) {
         void writeAudit(config.logPath, command, decision.verdict, "escalate", "external_directory", decision.reason)
       }
+      if (config.alert) fireAlert(config.alert)
       return
     }
 
@@ -102,7 +119,10 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     if (config.audit) {
       void writeAudit(config.logPath, filepath, verdict, verdict === undefined ? "approve" : "escalate", "edit")
     }
-    if (verdict !== undefined) return
+    if (verdict !== undefined) {
+      if (config.alert) fireAlert(config.alert)
+      return
+    }
     try {
       await replyOnce(request)
     } catch {
@@ -188,7 +208,7 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
   }
 }
 
-function parseOptions(options: unknown): { audit: boolean; logPath: string; sensitivePaths: string[] } {
+function parseOptions(options: unknown): { audit: boolean; logPath: string; sensitivePaths: string[]; alert: AlertConfig | undefined } {
   const raw = (options ?? {}) as BashSentinelOptions
   return {
     audit: raw.audit === true,
@@ -196,6 +216,7 @@ function parseOptions(options: unknown): { audit: boolean; logPath: string; sens
     sensitivePaths: Array.isArray(raw.sensitivePaths)
       ? raw.sensitivePaths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
       : [],
+    alert: parseAlertOption(raw.alert),
   }
 }
 
