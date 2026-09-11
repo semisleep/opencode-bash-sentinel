@@ -68,7 +68,11 @@ function safeSubstitution(program: string) {
 }
 
 function safePrintProgram(program: string) {
-  return /^(?:\d+|\$)?(?:,(?:\d+|\$))?p$/.test(program);
+  // Semicolon-joined scripts must be pure address-print lists; every segment
+  // is validated so write commands (w/W/r/s..w) never ride along.
+  return program
+    .split(";")
+    .every((command) => /^(?:\d+|\$)?(?:,(?:\d+|\$))?p$/.test(command));
 }
 
 function sectionEnd(program: string, start: number, delimiter: string) {

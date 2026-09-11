@@ -32,6 +32,8 @@ describe("architecture contract", () => {
   it("requires complete AST consumption and a decision unit", () => {
     allow("echo $VALUE");
     allow("echo ${VALUE}");
+    allow("echo $?");
+    allow('echo "exit=$?"');
     allow("printf '%s' \"$VALUE\"");
     allow("printf '%s' \"$(date)\"");
     ask("");
@@ -40,6 +42,7 @@ describe("architecture contract", () => {
     ask("echo ${VALUE:=changed}");
     ask("echo ${VALUE:-default}");
     ask("echo item{1,2}");
+    ask("cat $?");
   });
 
   it("requires every unit to allow", () => {

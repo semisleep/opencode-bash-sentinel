@@ -175,7 +175,10 @@ function historyArguments(subcommand: string, args: string[]) {
       !argument.startsWith("-") ||
       allowed.has(argument) ||
       (countForms &&
-        (/^-\d+$/.test(argument) || argument.startsWith("--max-count=")))
+        (/^-\d+$/.test(argument) ||
+          argument.startsWith("--max-count=") ||
+          argument.startsWith("--format=") ||
+          argument.startsWith("--date=")))
     )
       continue;
     return false;

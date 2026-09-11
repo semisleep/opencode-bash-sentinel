@@ -50,4 +50,13 @@ describe("git profile", () => {
     ask("git fetch -S x");
     ask("git log -s");
   });
+
+  it("allows display-only format options on log and show", () => {
+    allow('git log --format="%h %ad %s" --date=short -3 86bfe67');
+    allow("git log --date=iso -3");
+    allow("git show --format=%h HEAD");
+    ask("git diff --format=%h");
+    ask("git log --format %h");
+    ask("git status --date=short");
+  });
 });

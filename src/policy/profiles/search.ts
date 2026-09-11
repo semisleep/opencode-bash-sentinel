@@ -80,6 +80,30 @@ export function recognizeSearch(
         if (value === "-e" || value === "--regexp") hasPattern = true;
         continue;
       }
+      // -A/-B take a numeric context width in both tools; the width is
+      // display-only, so glued and attached spellings are positively safe.
+      if (/^-[AB]\d+$/.test(value)) continue;
+      if (
+        value === "-A" ||
+        value === "-B" ||
+        value === "--after-context" ||
+        value === "--before-context"
+      ) {
+        if (!/^\d+$/.test(values[++index] ?? ""))
+          return unsupported(node, `unsupported ${name} option`);
+        continue;
+      }
+      if (/^--(?:after-context|before-context)=\d+$/.test(value)) continue;
+      // rg's -r/--replace only rewrites matched text on stdout; grep's -r is
+      // valueless recursion and stays in grep's cluster set below.
+      if (name !== "grep") {
+        if (value === "-r" || value === "--replace") {
+          if (!values[++index])
+            return unsupported(node, `missing ${name} option value`);
+          continue;
+        }
+        if (/^(?:-r.+|--replace=.+)$/.test(value)) continue;
+      }
       const options = name === "grep" ? OPTION_SETS.grep : OPTION_SETS.default
       if (!options.short.test(value) && !options.long.has(value))
         return unsupported(node, `unsupported ${name} option`);

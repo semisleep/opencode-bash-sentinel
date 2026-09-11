@@ -41,6 +41,9 @@ const CONSUMED_NAMED_NODES = new Set([
   "command_substitution",
   "variable_assignment",
   "variable_name",
+  // $?-style parameters expand to non-path scalars and degrade to dynamic
+  // literals like variable_name; path-taking profiles still reject them.
+  "special_variable_name",
   "declaration_command",
   "file_redirect",
   "file_descriptor",

@@ -24,9 +24,31 @@ describe("search profiles", () => {
     allow("rg -a -o pattern src");
     allow("rg --text pattern src");
     ask("rg -E utf8 pattern");
-    ask("rg -r replacement pattern file");
-    ask("rg -A 5 pattern file");
-    ask("grep -A 5 pattern file");
+  });
+
+  it("supports numeric context widths in both classes", () => {
+    allow("rg -A 5 pattern file");
+    allow("rg -A5 pattern file");
+    allow("rg -B2 -A12 'FAIL|AssertionError' log.txt");
+    allow("grep -A 5 pattern file");
+    allow("grep -B3 pattern file");
+    allow("rg --after-context=3 pattern file");
+    allow("rg --before-context 2 pattern file");
+    allow("grep --after-context=3 pattern file");
+    ask("rg -A");
+    ask("rg -B");
+    ask("rg -A five pattern file");
+    ask("rg --after-context=wide pattern file");
+  });
+
+  it("supports rg's stdout-only replacement forms", () => {
+    allow("rg -r n 'permission.asked' node_modules/");
+    allow("rg -rn 'permission.asked' node_modules/");
+    allow("rg --replace=xx pattern file");
+    allow("rg --replace xx pattern file");
+    ask("rg -r");
+    ask("grep --replace x pattern file");
+    ask("grep -Areplacement pattern file");
   });
 
   it("splits long options per tool", () => {
