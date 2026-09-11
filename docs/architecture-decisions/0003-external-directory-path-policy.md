@@ -154,6 +154,20 @@ Honest limits, to be documented rather than papered over:
 - `glob`/`grep` asks that arrive as patterns rather than concrete paths mostly
   stay unhandled (pattern semantics cannot be reduced to a finite path set
   safely), so the practical win is concentrated on the `read` tool.
+- **Origin identification is engine-coupled.** It is derived from the opencode
+  1.18.29 implementation (legacy vs v2 permission plumbing), not from an
+  upstream contract. Three drift modes exist: a read tool migrating to the v2
+  shape silently reverts external reads to prompts (fail-closed, but not
+  directly distinguishable from the edit family); a write tool gaining legacy
+  metadata would have its directory-access half-ask auto-approved while the
+  independent `edit` gate still guards the write; a field rename reverts to
+  prompts. A post-acceptance review (2026-09-11) considered tightening the
+  fingerprint to the full legacy triple (`filepath` + `parentDir` + derived
+  `patterns[0]`) and declined it — it would make the prompt-reversion mode
+  more likely — in favor of auditing every unanswered `external_directory`
+  ask with its metadata shape, so any drift is visible in the audit log.
+  The durable fix is an upstream `permission.asked` origin field; until one
+  exists, re-verify the shapes on every engine-range change.
 
 ## Counterexamples and tests
 

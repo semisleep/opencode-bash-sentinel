@@ -351,6 +351,49 @@ describe("external_directory gate", () => {
     await emit(hooks, askedEvent({ permission: "external_directory", metadata: {} }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
+
+  it("audits unanswered external asks with their metadata shape for drift visibility", async () => {
+    const logPath = path.join(
+      os.tmpdir(),
+      `sentinel-shape-${process.pid}-${Date.now()}.jsonl`,
+    )
+    const hooks = await makePlugin({ audit: true, logPath })
+    await emit(
+      hooks,
+      askedEvent({
+        permission: "external_directory",
+        patterns: ["/etc/*"],
+        metadata: { filepath: "/etc/*" },
+      }),
+    )
+    await emit(
+      hooks,
+      askedEvent({
+        permission: "external_directory",
+        patterns: ["/Users/dev/*.zshrc/*"],
+        metadata: {},
+      }),
+    )
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const fs = await import("fs/promises")
+    const lines = (await fs.readFile(logPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line))
+    expect(lines).toHaveLength(2)
+    expect(lines[0]).toMatchObject({
+      action: "escalate",
+      reason: "unclassified external ask shape: filepath",
+      command: "/etc/*",
+    })
+    expect(lines[1]).toMatchObject({
+      action: "escalate",
+      reason: "unclassified external ask shape: no metadata",
+      command: "/Users/dev/*.zshrc/*",
+    })
+    await fs.rm(logPath)
+  })
 })
 
 describe("edit gate", () => {

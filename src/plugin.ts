@@ -115,7 +115,24 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
     // 1.18.29); the edit family arrives with empty metadata and stays with
     // the native dialog so external writes keep asking at every gate.
     const filepath = readExternalPath(request)
-    if (!filepath) return
+    if (!filepath) {
+      // Not a command ask and not a positively identified read-origin ask
+      // (the edit family arrives with empty metadata). Left to the native
+      // dialog, but audited with its metadata shape so engine drift away
+      // from the verified 1.18.29 shapes stays visible in the log.
+      if (config.audit) {
+        const keys = Object.keys(request.metadata ?? {})
+        void writeAudit(
+          config.logPath,
+          request.patterns?.join(" ") ?? "(no patterns)",
+          { kind: "unanalyzable" },
+          "escalate",
+          "external_directory",
+          `unclassified external ask shape: ${keys.length > 0 ? keys.join(",") : "no metadata"}`,
+        )
+      }
+      return
+    }
     const sensitive = isSensitiveTarget(
       filepath,
       ctx.homedir,

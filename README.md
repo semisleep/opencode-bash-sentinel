@@ -86,6 +86,8 @@ The `bash` and `external_directory` permissions are independent OpenCode gates, 
 
 Path-tool `external_directory` asks (for example from the `read` or `glob` tools) follow the same outside-workspace read rule when their payload positively identifies a read-only origin: non-sensitive external paths allow, sensitive roots ask, and write-origin or unrecognized shapes stay with the native dialog (ADR-0003).
 
+This origin identification is payload-based rather than an upstream contract — it was derived from the OpenCode 1.18.29 implementation and must be re-verified when the supported engine range changes. If a future engine changes these ask shapes, external read approvals revert to prompts (fail-closed). With `audit` enabled, every unanswered `external_directory` ask — including the edit family — is logged with its metadata shape, so such drift is visible in the audit log instead of silent.
+
 - OpenCode `deny` rules take precedence.
 - Session-scoped “always allow” answers bypass later Sentinel analysis.
 - `--auto` mode already approves everything and makes Sentinel unnecessary.
