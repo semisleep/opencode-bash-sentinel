@@ -24,7 +24,7 @@ const DEFAULT_HOME_ROOTS = [
   "Library/Keychains",
 ] as const;
 
-const DEFAULT_ABSOLUTE_ROOTS = ["/etc/shadow"] as const;
+const DEFAULT_ABSOLUTE_ROOTS = ["/etc/shadow", "/etc/ssl/private"] as const;
 
 const defaultCache = new Map<string, readonly string[]>();
 

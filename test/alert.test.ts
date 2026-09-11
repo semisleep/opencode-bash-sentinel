@@ -44,10 +44,14 @@ describe("parseAlertOption", () => {
     })
   })
 
-  it("rejects malformed values", () => {
+  it("rejects malformed values without disabling the other channel", () => {
     expect(parseAlertOption("yes")).toBeUndefined()
-    expect(parseAlertOption({ sound: 42 })).toBeUndefined()
     expect(parseAlertOption(undefined)).toBeUndefined()
+    expect(parseAlertOption({ sound: 42 })).toEqual({ sound: false, mark: false })
+    expect(parseAlertOption({ sound: 42, mark: true })).toEqual({
+      sound: false,
+      mark: true,
+    })
   })
 })
 

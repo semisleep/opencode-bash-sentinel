@@ -25,12 +25,7 @@ export function parseAlertOption(raw: unknown): AlertConfig | undefined {
   if (typeof raw !== "object" || raw === null) return undefined
   const options = raw as Record<string, unknown>
   const sound = options.sound
-  if (
-    sound !== undefined &&
-    typeof sound !== "boolean" &&
-    typeof sound !== "string"
-  )
-    return undefined
+  // Malformed field values disable that channel only, never the other.
   return {
     sound:
       sound === true || (typeof sound === "string" && sound.length > 0)

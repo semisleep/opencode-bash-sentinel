@@ -5,10 +5,37 @@ import { pathEffects, unsupported } from "./helpers";
 export const SEARCH_NAMES = new Set(["rg", "ripgrep", "grep"]);
 
 // -E and -r are valueless for grep but value-taking in ripgrep (--encoding,
-// --replace), so grep gets its own wider class of valueless read-only flags.
-const SHORT_OPTIONS = {
-  grep: /^-[nHhIiSsUvVwcClLoEaqxbPrR]+$/,
-  default: /^-[nHhIiSsUvVwcClLo]+$/,
+// --replace), and several rg-only long flags have no grep meaning, so each
+// tool gets its own valueless read-only option set.
+const OPTION_SETS = {
+  grep: {
+    short: /^-[nHhIiSsUvVwcClLoEaqxbPrR]+$/,
+    long: new Set([
+      "--count",
+      "--line-number",
+      "--fixed-strings",
+      "--extended-regexp",
+      "--recursive",
+      "--text",
+      "--byte-offset",
+      "--line-regexp",
+      "--quiet",
+      "--perl-regexp",
+      "--with-filename",
+      "--no-filename",
+    ]),
+  },
+  default: {
+    short: /^-[nHhIiSsUvVwcClLo]+$/,
+    long: new Set([
+      "--hidden",
+      "--follow",
+      "--count",
+      "--line-number",
+      "--no-heading",
+      "--fixed-strings",
+    ]),
+  },
 } as const;
 
 export function recognizeSearch(
@@ -52,20 +79,8 @@ export function recognizeSearch(
         if (value === "-e" || value === "--regexp") hasPattern = true;
         continue;
       }
-      if (
-        !(name === "grep"
-          ? SHORT_OPTIONS.grep
-          : SHORT_OPTIONS.default
-        ).test(value) &&
-        ![
-          "--hidden",
-          "--follow",
-          "--count",
-          "--line-number",
-          "--no-heading",
-          "--fixed-strings",
-        ].includes(value)
-      )
+      const options = name === "grep" ? OPTION_SETS.grep : OPTION_SETS.default
+      if (!options.short.test(value) && !options.long.has(value))
         return unsupported(node, `unsupported ${name} option`);
       continue;
     }

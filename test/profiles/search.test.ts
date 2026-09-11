@@ -25,4 +25,13 @@ describe("search profiles", () => {
     ask("rg -r replacement pattern file");
     ask("grep -A 5 pattern file");
   });
+
+  it("splits long options per tool", () => {
+    allow("grep --extended-regexp pattern file");
+    allow("grep --recursive pattern src");
+    allow("rg --hidden pattern src");
+    ask("grep --hidden pattern file");
+    ask("grep --follow pattern file");
+    ask("grep --no-heading pattern file");
+  });
 });

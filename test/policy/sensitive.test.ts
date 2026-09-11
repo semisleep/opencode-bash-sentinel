@@ -13,6 +13,7 @@ describe("isSensitiveTarget", () => {
     expect(isSensitiveTarget("/home/dev/.ssh/id_rsa", home)).toBe(true);
     expect(isSensitiveTarget("/home/dev/.aws/credentials", home)).toBe(true);
     expect(isSensitiveTarget("/etc/shadow", home)).toBe(true);
+    expect(isSensitiveTarget("/etc/ssl/private/server.key", home)).toBe(true);
   });
 
   it("matches case-insensitively, like the .git red line", () => {
@@ -27,6 +28,7 @@ describe("isSensitiveTarget", () => {
     expect(isSensitiveTarget("/home/dev/.sshfoo", home)).toBe(false);
     expect(isSensitiveTarget("/home/dev/.aws-notes", home)).toBe(false);
     expect(isSensitiveTarget("/etc/hosts", home)).toBe(false);
+    expect(isSensitiveTarget("/etc/ssl/cert.pem", home)).toBe(false);
     expect(isSensitiveTarget("/home/dev/project/credentials", home)).toBe(false);
   });
 
