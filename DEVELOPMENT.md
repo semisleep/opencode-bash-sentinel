@@ -13,6 +13,7 @@ src/policy/types.ts            decision units and shared fact types
 src/policy/paths.ts            lexical path resolution and containment
 src/policy/baseline.ts         session-fixed committed-and-unchanged baseline
 src/policy/sensitive.ts        sensitive-read roots for the situation-2 red line
+src/policy/scratch.ts          ADR-0004 scratch roots for external mutations
 src/policy/redirect.ts         redirect recognition
 src/policy/profiles/           complete command-specific recognizers
 src/policy/analyze.ts          situation rules and source aggregation

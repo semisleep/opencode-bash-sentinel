@@ -16,6 +16,8 @@ export interface WorkspaceContext {
   readonly baseline: BaselineInspector;
   /** Additive sensitive-read roots unioned with the ADR-0002 defaults. */
   readonly extraSensitiveRoots?: readonly string[];
+  /** ADR-0004 scratch roots: external mutations allow only strictly inside. */
+  readonly scratchRoots?: readonly string[];
 }
 
 export interface DecisionUnit {

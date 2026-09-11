@@ -56,7 +56,7 @@ export function samePath(a: string, b: string) {
 // Node's normalize keeps one trailing separator, but path identity for the
 // red lines must not depend on that spelling: tab completion routinely
 // yields `rm -rf /work/project/`, which names the same root.
-function stripTrailingSeparators(value: string) {
+export function stripTrailingSeparators(value: string) {
   const stripped = value.replace(/[\\/]+$/, "");
   return stripped === "" ? "/" : stripped;
 }

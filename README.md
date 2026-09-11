@@ -45,14 +45,21 @@ The last example asks when that entry file is modified, untracked, committed onl
 
 A finite set of recognized read-only forms is allowed. Recognized writes and unsupported forms require approval. Reads of a small, conservative set of sensitive paths (credential and key stores such as `~/.ssh`, `~/.aws`, `~/.gnupg`) instead ask, so an agent cannot silently spill them into the transcript.
 
+There is one exception for writes: recognized mutations targeting a strict descendant of a designated scratch root (ADR-0004) allow. The default list is the host's system temp directories (`/tmp`, `/private/tmp` on macOS, and the resolved `TMPDIR`); deleting or moving a scratch root itself still asks, and sensitive reads still ask even when the write side is scratch.
+
 ```bash
 cat /etc/hosts       # allow
 ls -la /tmp          # allow
-echo x > /tmp/out    # ask
+echo x > /tmp/out    # allow (scratch descendant)
+rm -rf /tmp/probe    # allow (scratch descendant)
+rm -rf /tmp          # ask (scratch root itself)
+echo x > /etc/out    # ask
 cat ~/.ssh/id_rsa    # ask
 ```
 
 The sensitive list is best-effort, not a completeness guarantee: an unlisted path keeps the ordinary external-read behavior, and matching is lexical (case-insensitive, like the `.git` rule), so a symlink pointing at a sensitive location is not caught. Extra roots can be added with the `sensitivePaths` option; they only add prompts.
+
+The same lexical caveat applies to scratch roots, and scratch directories are shared and world-writable by convention: the allowance trusts the path spelling, not the filesystem, and everything under a scratch root is treated as ephemeral — including another session's throwaway checkout. Scratch matching is exact-case (`/TMP` is not `/tmp`), so case-varied spellings ask. The `scratchPaths` option replaces the default list (`["/srv/scratch"]`) or disables the feature entirely (`false`); it cannot remove the sensitive-read or scratch-root red lines.
 
 If one recognized command mixes inside and outside targets, the entire command is treated as outside.
 

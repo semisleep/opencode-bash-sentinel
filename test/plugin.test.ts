@@ -120,7 +120,7 @@ describe("bash gate", () => {
       makeInput({ client: { postSessionIdPermissionsPermissionId: legacyReply } }),
       undefined,
     )
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /etc/out" } }))
     await emit(hooks, askedEvent({ metadata: { command: "rm ~/.zshrc" } }))
     await emit(hooks, askedEvent({ metadata: { command: "sed -i s/a/b/ /etc/hosts" } }))
     await emit(hooks, askedEvent({ metadata: { command: "python -c 'x'" } }))
@@ -225,7 +225,7 @@ describe("bash gate", () => {
 
   it("the removed upstream option can no longer disable fail-closed policy", async () => {
     const hooks = await makePlugin({ upstream: true })
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /etc/out" } }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -270,12 +270,12 @@ describe("external_directory gate", () => {
 
   it("external and bash permissions remain independent for dangerous commands", async () => {
     const hooks = await makePlugin()
-    // 1. external ask for rm /tmp/x: policy says dangerous → no reply
-    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "rm /tmp/x" } }))
+    // 1. external ask for rm /etc/x: policy says dangerous → no reply
+    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "rm /etc/x" } }))
     expect(fetchMock).not.toHaveBeenCalled()
     // 2. Approval of directory access is not treated as approval of the
     //    command's separate bash risk, so the follow-up also stays with the human.
-    await emit(hooks, askedEvent({ metadata: { command: "rm /tmp/x" } }))
+    await emit(hooks, askedEvent({ metadata: { command: "rm /etc/x" } }))
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -478,6 +478,40 @@ describe("alert hooks", () => {
   })
 })
 
+describe("scratch roots (ADR-0004)", () => {
+  it("default host list approves scratch mutations and keeps the root red line", async () => {
+    const hooks = await makePlugin()
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /tmp/" } }))
+    expect(fetchMock).toHaveBeenCalledTimes(1) // no second reply
+  })
+
+  it("scratchPaths: false disables the feature entirely", async () => {
+    const hooks = await makePlugin({ scratchPaths: false })
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("a scratchPaths array replaces the default list", async () => {
+    const hooks = await makePlugin({ scratchPaths: ["/srv/scratch"] })
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
+    expect(fetchMock).not.toHaveBeenCalled()
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /srv/scratch/out" } }))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("a TMPDIR covering the workspace is rejected as a scratch root", async () => {
+    vi.stubEnv("TMPDIR", "/Users/dev")
+    const hooks = await makePlugin()
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /Users/dev/tmp-out" } }))
+    expect(fetchMock).not.toHaveBeenCalled()
+    // /tmp remains scratch even when the TMPDIR candidate was rejected
+    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe("audit log", () => {
   it("appends one JSONL line per decision when enabled", async () => {
     const os = await import("os")
@@ -487,7 +521,7 @@ describe("audit log", () => {
 
     const hooks = await makePlugin({ audit: true, logPath })
     await emit(hooks, askedEvent())
-    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /tmp/x" } }))
+    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /etc/x" } }))
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     const lines = (await fs.readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
@@ -496,7 +530,7 @@ describe("audit log", () => {
       expect.objectContaining({ gate: "bash", command: "git status", verdict: "safe", action: "approve" }),
     )
     expect(lines).toContainEqual(
-      expect.objectContaining({ gate: "bash", command: "rm -rf /tmp/x", verdict: "unanalyzable", action: "escalate" }),
+      expect.objectContaining({ gate: "bash", command: "rm -rf /etc/x", verdict: "unanalyzable", action: "escalate" }),
     )
     await fs.rm(logPath)
   })

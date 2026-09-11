@@ -13,6 +13,7 @@ import {
 import { recognizeCommand } from "./profiles/registry";
 import { recognizeRedirect } from "./redirect";
 import { isSensitiveTarget } from "./sensitive";
+import { isScratchDescendant, isScratchRoot } from "./scratch";
 import type {
   DecisionUnit,
   Effect,
@@ -97,12 +98,10 @@ function finalize(
         ? "workspace-outside"
         : "workspace-inside";
   if (situation === "workspace-outside") {
-    allowed &&=
-      effects.length > 0 && effects.every((effect) => effect.kind === "read");
-    if (!allowed) reason = "external write or unsupported external operation";
-    // Situation-2 read red line: a recognized external read still asks when a
-    // target resolves under a designated sensitive root (ADR-0002).
-    else if (
+    // The sensitive-read red line (ADR-0002) is evaluated first and prevails
+    // over the scratch allowance below: a sensitive read target asks even
+    // when every mutation effect in the same unit targets scratch.
+    if (
       resolved.some(
         (item) =>
           item.path &&
@@ -111,6 +110,34 @@ function finalize(
     ) {
       allowed = false;
       reason = "sensitive external read";
+    } else if (effects.length === 0) {
+      allowed = false;
+      reason = "external write or unsupported external operation";
+    } else if (
+      effects.every((effect) => effect.kind === "read") ||
+      resolved.every(
+        (item) =>
+          item.effect.kind === "read" ||
+          (item.path !== undefined &&
+            isScratchDescendant(item.path, ctx.scratchRoots ?? [])),
+      )
+    ) {
+      // All-read external reads keep today's allowance; otherwise the
+      // ADR-0004 scratch allowance admits a unit whose every mutation
+      // effect targets a strict descendant of a designated scratch root.
+      // Strict descent is also the scratch-root deletion red line: a delete
+      // or move-source on a root itself falls through to the ask below.
+    } else {
+      allowed = false;
+      reason = resolved.some(
+        (item) =>
+          item.path &&
+          (item.effect.kind === "delete" ||
+            item.effect.kind === "move-source") &&
+          isScratchRoot(item.path, ctx.scratchRoots ?? []),
+      )
+        ? "scratch root removal"
+        : "external write or unsupported external operation";
     }
   } else if (situation === "workspace-neutral-or-indeterminate") {
     allowed &&= seed.allowed === true;

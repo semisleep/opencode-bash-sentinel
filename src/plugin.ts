@@ -12,6 +12,7 @@ import {
   defaultWorkspaceContext,
   hasGitSegment,
   isSensitiveTarget,
+  stripTrailingSeparators,
   withinWorkspace,
 } from "./workspace-policy"
 
@@ -20,6 +21,8 @@ export interface BashSentinelOptions {
   logPath?: string
   /** Additional sensitive-read roots, unioned with the ADR-0002 defaults. */
   sensitivePaths?: string[]
+  /** ADR-0004 scratch roots: unset = host defaults, false = off, array = replace. */
+  scratchPaths?: string[] | false
   /** Escalation alerts: sound plus an iTerm2 tab mark, cleared on reply. */
   alert?: boolean | {
     sound?: boolean | string
@@ -45,7 +48,18 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
   const config = parseOptions(options)
   const workspace =
     input.worktree && input.worktree.length > 0 ? input.worktree : input.directory
-  const ctx = defaultWorkspaceContext(workspace, input.directory, config.sensitivePaths)
+  const scratchRoots =
+    config.scratchPaths === undefined
+      ? defaultScratchRoots(workspace)
+      : config.scratchPaths === false
+        ? []
+        : config.scratchPaths
+  const ctx = defaultWorkspaceContext(
+    workspace,
+    input.directory,
+    config.sensitivePaths,
+    scratchRoots,
+  )
 
   void probeTransport(input, config)
 
@@ -269,7 +283,13 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
   }
 }
 
-function parseOptions(options: unknown): { audit: boolean; logPath: string; sensitivePaths: string[]; alert: AlertConfig | undefined } {
+function parseOptions(options: unknown): {
+  audit: boolean
+  logPath: string
+  sensitivePaths: string[]
+  scratchPaths: string[] | false | undefined
+  alert: AlertConfig | undefined
+} {
   const raw = (options ?? {}) as BashSentinelOptions
   return {
     audit: raw.audit === true,
@@ -277,8 +297,46 @@ function parseOptions(options: unknown): { audit: boolean; logPath: string; sens
     sensitivePaths: Array.isArray(raw.sensitivePaths)
       ? raw.sensitivePaths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
       : [],
+    scratchPaths:
+      raw.scratchPaths === false
+        ? false
+        : Array.isArray(raw.scratchPaths)
+          ? raw.scratchPaths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+          : undefined,
     alert: parseAlertOption(raw.alert),
   }
+}
+
+// ADR-0004 default scratch roots (host layer; the engine ships no defaults).
+// /tmp plus its darwin /private/tmp spelling — matching is lexical and the
+// symlink is not canonicalized — plus the host-process TMPDIR when set,
+// absolute, and not covering a real tree. /var/tmp and /run/user are
+// excluded: persistent or session state, not ephemeral by convention. Never
+// read $TMPDIR at analysis time; the resolved value is fixed here, once per
+// plugin context.
+function defaultScratchRoots(workspace: string): string[] {
+  const roots = new Set<string>(["/tmp"])
+  if (process.platform === "darwin") roots.add("/private/tmp")
+  const tmpdir = process.env.TMPDIR
+  if (
+    tmpdir &&
+    path.isAbsolute(tmpdir) &&
+    !coversRealTree(tmpdir, path.normalize(workspace))
+  )
+    roots.add(path.normalize(tmpdir))
+  return [...roots]
+}
+
+// A temp directory must not swallow real trees: reject a TMPDIR that equals
+// or lexically contains the home directory or the workspace root (for
+// example TMPDIR=$HOME), which would auto-approve mutations far outside any
+// temp location. Narrowing only — a rejected TMPDIR simply drops out.
+function coversRealTree(candidate: string, workspace: string): boolean {
+  const root = stripTrailingSeparators(path.normalize(candidate))
+  return [os.homedir(), workspace].some((directory) => {
+    const value = stripTrailingSeparators(path.normalize(directory))
+    return value === root || value.startsWith(root + path.sep)
+  })
 }
 
 function readCommand(request: AskedEvent): unknown {

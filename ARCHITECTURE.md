@@ -32,7 +32,8 @@ The following are accepted trust boundaries:
 - a workspace entry script is trusted only when its content matches the Git commit captured when the Sentinel context was created and remains unchanged in the index and worktree; later commits do not advance that baseline;
 - a recognized development workflow trusts only its direct declared control files, not hooks, transitive commands, build graphs, or runtime effects;
 - an approved `source` file may alter later shell interpretation; shell state is not simulated;
-- arbitrary environment semantics, network side effects, tool configuration, and concurrent changes between analysis and execution are not modeled.
+- arbitrary environment semantics, network side effects, tool configuration, and concurrent changes between analysis and execution are not modeled;
+- designated scratch roots (ADR-0004) are trusted for external mutation lexically: strict descendants only, no symlink canonicalization, host-supplied and host-shrinkable, and always subordinate to the sensitive-read red line.
 
 These boundaries may be changed only as architecture decisions, not by quietly widening a command profile.
 
@@ -121,9 +122,9 @@ The committed-and-unchanged baseline is fixed when the policy context is created
 
 If any classification target of a recognized filesystem operation is external, the entire unit is outside. The analyzer does not split mixed source and destination operations to recover an allow.
 
-Only finite recognized external reads allow. External writes and unsupported forms ask.
+Only finite recognized external reads allow. Additionally, within designated scratch roots (ADR-0004), a recognized unit allows when every mutation effect targets a strict descendant of a root; every other external write and unsupported form asks. A deletion or move-away of a scratch root itself asks, symmetric to the workspace-root red line.
 
-One read red line applies here, symmetric to the situation-1 `.git` red line: a recognized external read still asks when a target resolves under a designated sensitive root (for example a credential or key store). The set is a conservative, best-effort catalogue, may be extended additively per context, and matches lexically like workspace containment; it narrows allow toward ask only and never turns an ask into an allow.
+One read red line applies here, symmetric to the situation-1 `.git` red line: a recognized external read still asks when a target resolves under a designated sensitive root (for example a credential or key store). The set is a conservative, best-effort catalogue, may be extended additively per context, and matches lexically like workspace containment; it narrows allow toward ask only and never turns an ask into an allow, and it prevails over the scratch allowance.
 
 ### 3. No workspace relationship, or indeterminate
 

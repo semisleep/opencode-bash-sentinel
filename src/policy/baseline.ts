@@ -12,6 +12,7 @@ export function defaultWorkspaceContext(
   workspace: string,
   cwd: string = workspace,
   extraSensitiveRoots: readonly string[] = [],
+  scratchRoots: readonly string[] = [],
 ): WorkspaceContext {
   const root = path.normalize(workspace);
   return {
@@ -20,6 +21,7 @@ export function defaultWorkspaceContext(
     homedir: os.homedir(),
     baseline: new GitBaseline(root),
     extraSensitiveRoots,
+    scratchRoots,
   };
 }
 
