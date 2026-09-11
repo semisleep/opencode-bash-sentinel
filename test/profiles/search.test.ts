@@ -99,6 +99,14 @@ describe("search profiles", () => {
     ask("rg -n pattern src/$dir/*.ts");
     ask("rg -n pattern {src,test}/*.ts");
     ask("rg -n pattern @(src|test)/*.ts");
+    // A `..` behind the first wildcard can climb the expansion out of the
+    // literal prefix and bypass the sensitive red line; prefix-literal `..`
+    // stays fine (pinned as an allow above).
+    ask("rg -n pattern src/*/../x/*.ts");
+    ask("rg -n pattern src/*/..");
+    ask(
+      "rg pattern src/*/../../../../home/dev/.ssh/id_rsa",
+    );
     // The resolved prefix is still subject to the sensitive red line.
     ask("rg pattern ~/.ssh/*.pub");
   });
