@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { BashSentinelPlugin } from "../src/plugin"
 import { analyzeWorkspacePolicy } from "../src/workspace-policy"
+import { BUILD_ID } from "../src/version"
 import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import { clearAlert, fireAlert } from "../src/alert"
 import { execFileSync } from "node:child_process"
@@ -688,6 +689,8 @@ describe("audit log", () => {
 
     const lines = (await fs.readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
     expect(lines).toHaveLength(2)
+    for (const line of lines)
+      expect(line.build).toBe(BUILD_ID)
     expect(lines).toContainEqual(
       expect.objectContaining({ gate: "bash", command: "git status", verdict: "safe", action: "approve" }),
     )

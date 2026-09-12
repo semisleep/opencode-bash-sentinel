@@ -149,6 +149,8 @@ The `edit` route is optional but recommended for consistent workspace and `.git`
 
 By default the plugin injects this guidance into the system prompt of every session-bound request, steering the agent toward command forms the analyzer can positively recognize (fewer prompts, faster progress). Set `"guidance": false` if you do not want a permission plugin touching prompts.
 
+Every audit line carries a `build` field identifying the code that produced it: the plugin's `git rev-parse --short HEAD` captured when the opencode process loaded it, with `+dirty` when engine sources were uncommitted at that moment. opencode loads this plugin directly from source with no build step and never hot-reloads it, so a running server keeps the code it started with — the `build` field is how you tell a stale-process verdict from current-source behavior.
+
 ## Development and provenance
 
 [ARCHITECTURE.md](ARCHITECTURE.md) is the stable policy constitution. [DEVELOPMENT.md](DEVELOPMENT.md) explains module ownership, extension rules, and verification. `CLAUDE.md` links to `AGENTS.md` so supported agents receive the same project instructions.

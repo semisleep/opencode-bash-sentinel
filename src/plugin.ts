@@ -18,6 +18,7 @@ import {
   stripTrailingSeparators,
   withinWorkspace,
 } from "./workspace-policy"
+import { BUILD_ID } from "./version"
 
 export interface BashSentinelOptions {
   audit?: boolean
@@ -473,6 +474,7 @@ async function writeAudit(
         timestamp: new Date().toISOString(),
         gate,
         command,
+        build: BUILD_ID,
         verdict: verdict === undefined ? "safe" : verdict.kind,
         detail: verdict === undefined ? undefined : verdict.kind === "dangerous" ? verdict.command : verdict.kind,
         reason,

@@ -42,19 +42,29 @@ the cost of supporting it — including whether that cost is architectural.
    `reason` is the ground truth); order most-recent-first; take the first
    N (default 10). Near-duplicates that differ only in arguments are
    separate entries.
-4. Sanity check: if a `(transport probe)` degraded line sits near those
+4. Version check: each audit line's `build` field names the code that
+   produced it (`git rev-parse --short HEAD` captured when the opencode
+   process loaded the plugin, `+dirty` when engine sources were
+   uncommitted; lines from before this field existed carry none). Compare
+   it with the repo's current `git rev-parse --short HEAD`. On mismatch
+   (or missing field), those verdicts came from older code: reproduce
+   with the current analyzer and let IT govern the cost assessment,
+   report both readings, and tell the user to restart opencode to load
+   current code. There is no build step — the plugin loads repo source
+   directly, so "stale build" always means "stale process".
+5. Sanity check: if a `(transport probe)` degraded line sits near those
    timestamps, the asks may be transport failure (all-prompts mode), not
    analyzer verdicts — say so and stop.
-5. Cache: read `.agents/skills/why-ask/cache.json` (repo-relative,
-   gitignored per-checkout local state — never commit it) if it exists
-   (schema below). For each candidate:
-   - cached entry with the same command AND same `reason` → serve from
-     cache, skip analysis;
-   - cached entry whose `reason` differs from the audit line → the
-     analyzer changed, re-analyze and overwrite;
-   - the user explicitly asked to re-analyze ("重新分析", "re-analyze",
-     "ignore cache") → bypass the cache for the whole batch.
-6. If the log is missing or has no escalate lines: report that audit
+6. Cache: read `.agents/skills/why-ask/cache.json` (repo-relative,
+    gitignored per-checkout local state — never commit it) if it exists
+    (schema below). For each candidate:
+    - cached entry with the same command AND same `reason` → serve from
+      cache, skip analysis;
+    - cached entry whose `reason` differs from the audit line → the
+      analyzer changed, re-analyze and overwrite;
+    - the user explicitly asked to re-analyze ("重新分析", "re-analyze",
+      "ignore cache") → bypass the cache for the whole batch.
+7. If the log is missing or has no escalate lines: report that audit
    appears off and fall back to paste mode.
 
 ## Step 1 — Reproduce with the real analyzer, never by guessing
@@ -224,7 +234,8 @@ capped at 200):
 - Probe scripts go in the system temp dir and are deleted afterwards.
 - If the runtime reason and your local reproduction disagree, the runtime
   context (baseline, cwd, audit line) wins — report both and explain the
-  difference.
+  difference — unless the audit `build` field identifies stale code (see
+  Step 0), in which case the current-analyzer reproduction governs.
 - Never serve a cached conclusion whose `reason` no longer matches the
   audit line.
 - Never pop a question dialog asking which log entries to analyze —
