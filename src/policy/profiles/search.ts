@@ -1,6 +1,6 @@
 import type { SyntaxNode } from "../../parser/node";
 import type { Invocation, UnitSeed } from "../types";
-import { pathEffects, unsupported } from "./helpers";
+import { globReadTarget, pathEffects, unsupported } from "./helpers";
 
 export const SEARCH_NAMES = new Set(["rg", "ripgrep", "grep"]);
 
@@ -38,25 +38,6 @@ const OPTION_SETS = {
     ]),
   },
 } as const;
-
-// A shell pathname glob is acceptable as a read operand only when a literal
-// path component precedes every wildcard: each expanded element then starts
-// with that literal prefix, so the tool can never reparse a matched filename
-// (for example `--pre=...`) as an option. Expansion, brace, and extglob
-// material is refused, as is any `..` component behind the first wildcard —
-// shell-side normalization could climb it out of the prefix bound. The read
-// conservatively covers the literal directory prefix, which classifies like
-// any other read operand.
-function globReadTarget(raw: string): string | undefined {
-  if (raw.startsWith("-")) return;
-  if (/[$`{}()\\'"\s;&|<>!^]/.test(raw)) return;
-  const wildcard = raw.search(/[*?\[]/);
-  if (wildcard < 0) return;
-  const slash = raw.lastIndexOf("/", wildcard);
-  if (slash < 0) return;
-  if (raw.slice(slash + 1).split("/").includes("..")) return;
-  return raw.slice(0, slash + 1);
-}
 
 type Entry = { literal: string } | { glob: string };
 

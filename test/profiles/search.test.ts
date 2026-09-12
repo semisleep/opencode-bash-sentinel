@@ -77,19 +77,23 @@ describe("search profiles", () => {
     allow("rg -n pattern ../*.ts");
     allow("rg pattern /etc/*.conf");
     allow("rg pattern ~/*.ts");
+    allow("rg -n pattern a*.ts");
+    allow("rg -n pattern opencode.json* doc/*.md");
     expect(decision("rg pattern /etc/*.conf").units[0]?.situation).toBe(
       "workspace-outside",
     );
     expect(decision("rg -n pattern src/*.ts").units[0]?.situation).toBe(
       "workspace-inside",
     );
+    expect(decision("rg -n pattern opencode.json*").units[0]?.situation).toBe(
+      "workspace-inside",
+    );
   });
 
   it("keeps asking for unsafe or dynamic glob forms", () => {
-    // A wildcard in the first component can expand to a leading-dash
-    // filename that the tool would reparse as an option.
+    // A wildcard with no literal prefix in the first component can expand
+    // to a leading-dash filename that the tool would reparse as an option.
     ask("rg -n pattern *.ts");
-    ask("rg -n pattern a*.ts");
     ask("rg -n pattern -*.ts");
     ask("rg *.ts src");
     // Globs are never safe as the pattern or an option value.
@@ -99,9 +103,13 @@ describe("search profiles", () => {
     ask("rg -n pattern src/$dir/*.ts");
     ask("rg -n pattern {src,test}/*.ts");
     ask("rg -n pattern @(src|test)/*.ts");
-    // A `..` behind the first wildcard can climb the expansion out of the
-    // literal prefix and bypass the sensitive red line; prefix-literal `..`
-    // stays fine (pinned as an allow above).
+    // A dot-prefixed wildcard component can expand to `.` or `..` and so
+    // climb out of the prefix bound, and a `..` behind the first wildcard
+    // can bypass the sensitive red line; prefix-literal `..` stays fine
+    // (pinned as an allow above).
+    ask("rg -n pattern .*");
+    ask("rg -n pattern ..*");
+    ask("rg -n pattern src/.*");
     ask("rg -n pattern src/*/../x/*.ts");
     ask("rg -n pattern src/*/..");
     ask(

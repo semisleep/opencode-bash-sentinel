@@ -58,7 +58,7 @@ describe("workspace situations and red lines", () => {
   it("does not infer paths from unsupported command shapes", () => {
     ask("unknown /work/project/file");
     ask("rm $TARGET");
-    ask("cat *.txt");
+    ask("cat *");
     ask("cat --unknown README.md");
     ask("rm --unknown build");
     ask("rg --pre ./filter TODO src");

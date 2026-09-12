@@ -48,6 +48,21 @@ describe("filesystem reader profiles", () => {
     ask("tail -n");
   });
 
+  it("allows bounded glob operands on value-free readers", () => {
+    allow("ls opencode.json*");
+    allow("ls src/*.ts");
+    allow("cat CHANGELOG*");
+    allow("wc -l package*.json");
+    ask("ls *.ts");
+    ask("cat *.md");
+    ask("ls .*");
+    ask("ls src/.*");
+    // Value-taking grammars keep literal-only arguments, because a cover
+    // eaten as an option value would under-report reads.
+    ask("head -n 5 *.ts");
+    ask("sort *.ts");
+  });
+
   it("keeps sort read-only", () => {
     allow("sort");
     allow("sort -n -r file");

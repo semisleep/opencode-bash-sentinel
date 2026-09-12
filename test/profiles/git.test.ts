@@ -21,7 +21,9 @@ describe("git profile", () => {
     ask("git -c alias.x='!evil' x");
     ask("git -C /tmp/repo add file");
     ask("git diff --ext-diff");
-    ask("git status -- file");
+    allow("git status -- file");
+    allow("git status --porcelain -- src index.ts");
+    ask("git status --porcelain=v1");
     ask("git diff -- --raw");
     ask("git add --max-count=1 file");
     ask("git show --untracked-files=all");
@@ -58,6 +60,18 @@ describe("git profile", () => {
     ask("git diff --format=%h");
     ask("git log --format %h");
     ask("git status --date=short");
+  });
+
+  it("allows date-range filters on log and show", () => {
+    allow('git log --oneline --since="2026-09-12 00:00" -- src/plugin.ts');
+    allow("git log --since=1.week --until=yesterday");
+    allow("git show --after=2026-09-01 --before=2026-09-12 HEAD");
+    allow(
+      "git log --format='%h %ad %s' --date=format:'%H:%M' --since='2026-09-12 00:00' -- src/plugin.ts",
+    );
+    ask("git diff --since=1.week");
+    ask("git log --since");
+    ask("git status --since=1.week");
   });
 
   it("allows read-only git check-ignore queries", () => {

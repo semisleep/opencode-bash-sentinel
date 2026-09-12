@@ -1,3 +1,4 @@
+import { globReadTarget } from "../helpers";
 import type { Invocation } from "../../types";
 
 export type ParsedArguments = {
@@ -20,6 +21,28 @@ export function literalArguments(
   return args.every((argument) => argument !== undefined)
     ? (args as string[])
     : undefined;
+}
+
+// A grammar without value-taking short options can never consume the
+// argument after an option as a value, so a non-literal argument can only
+// occupy operand position: a bounded glob cover may stand in for it. Every
+// other grammar keeps requiring literals, because a cover silently eaten
+// as an option value would under-report reads.
+export function literalOrGlobArguments(
+  invocation: Invocation,
+  grammar: OptionGrammar,
+): string[] | undefined {
+  if (grammar.shortWithValue) return literalArguments(invocation);
+  const args: string[] = [];
+  for (const argument of invocation.args) {
+    if (argument.literal !== undefined) args.push(argument.literal);
+    else {
+      const glob = globReadTarget(argument.raw);
+      if (glob === undefined) return undefined;
+      args.push(glob);
+    }
+  }
+  return args;
 }
 
 export function parseArguments(

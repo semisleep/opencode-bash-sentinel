@@ -2,7 +2,7 @@ import type { SyntaxNode } from "../../../parser/node";
 import type { Invocation, UnitSeed } from "../../types";
 import { pathEffects, unsupported } from "../helpers";
 import {
-  literalArguments,
+  literalOrGlobArguments,
   parseArguments,
   type OptionGrammar,
 } from "./options";
@@ -80,7 +80,7 @@ export function recognizeFilesystemReader(
 ): UnitSeed | undefined {
   const grammar = GRAMMARS[name];
   if (!grammar) return;
-  const args = literalArguments(invocation);
+  const args = literalOrGlobArguments(invocation, grammar);
   if (!args) return unsupported(node, `dynamic ${name}`);
   const parsed = parseArguments(args, grammar);
   if (!parsed) return unsupported(node, `unsupported ${name}`);

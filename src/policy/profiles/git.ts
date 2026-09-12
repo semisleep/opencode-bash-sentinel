@@ -29,6 +29,8 @@ const FLAGS: Record<string, Set<string>> = {
     "--show-stash",
     "--ignored",
     "--no-renames",
+    "--porcelain",
+    "--",
   ]),
   diff: new Set([
     "--",
@@ -195,7 +197,11 @@ function historyArguments(subcommand: string, args: string[]) {
         (/^-\d+$/.test(argument) ||
           argument.startsWith("--max-count=") ||
           argument.startsWith("--format=") ||
-          argument.startsWith("--date=")))
+          argument.startsWith("--date=") ||
+          argument.startsWith("--since=") ||
+          argument.startsWith("--until=") ||
+          argument.startsWith("--after=") ||
+          argument.startsWith("--before=")))
     )
       continue;
     return false;
