@@ -12,6 +12,7 @@ const READ_SUBCOMMANDS = new Set([
   "grep",
   "branch",
   "merge-base",
+  "check-ignore",
 ]);
 
 const ALL_SUBCOMMANDS = new Set([
@@ -104,6 +105,17 @@ const FLAGS: Record<string, Set<string>> = {
     "--fixed-strings",
   ]),
   add: new Set(["-A", "-u", "--all", "--update", "--intent-to-add"]),
+  "check-ignore": new Set([
+    "-q",
+    "--quiet",
+    "-v",
+    "--verbose",
+    "-n",
+    "--non-matching",
+    "--no-index",
+    "-z",
+    "--null",
+  ]),
 };
 
 export const recognizeGit: CommandProfile = (node, invocation, ctx, cwd) => {

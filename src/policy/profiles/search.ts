@@ -112,7 +112,7 @@ export function recognizeSearch(
       paths.push(...tail.map(operand));
       break;
     }
-    if (!hasPattern && value.startsWith("-")) {
+    if (value.startsWith("-")) {
       if (value === "--files") {
         if (name === "grep")
           return unsupported(node, "unsupported grep option");

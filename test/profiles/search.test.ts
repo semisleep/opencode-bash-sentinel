@@ -111,6 +111,25 @@ describe("search profiles", () => {
     ask("rg pattern ~/.ssh/*.pub");
   });
 
+  it("recognizes value-taking options after the pattern", () => {
+    allow("rg -n pattern src --type ts");
+    allow("rg -n pattern src -g '!*test*'");
+    allow('rg -n pattern packages -g \'!*sdk*\' -g \'!*generated*\' | head -20');
+    allow("rg -rn '\"permission\\.ask\"|permission.ask' src/server src/opencode --type ts -g '!*test*'");
+    allow("rg -n 'Plugin.trigger' packages -r --type ts -g '!*sdk*'");
+    allow("rg -n pattern src -t ts");
+    allow("rg -n pattern src -r rep");
+    allow("grep -rn pattern src -E");
+    allow("rg pattern -- files");
+    // Options past the pattern validate against the same tables, so an
+    // unknown flag now asks everywhere instead of lucky-allowing as a
+    // misparsed in-workspace read path.
+    ask("rg -n pattern src -Z");
+    ask("rg -n pattern src --pre x");
+    ask("rg -n pattern src -g");
+    ask("rg -n pattern src --type");
+  });
+
   it("allows the composed glob-search shape end to end", () => {
     allow(
       'rg -n "processCustomerRelationshipsUpdate" src/domain/customer-management/server/*.ts | head -5; echo ---; rg -ln "status.*valid|\'valid\'" src/domain/customer-management/server/ | head',

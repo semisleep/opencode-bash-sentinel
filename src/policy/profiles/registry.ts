@@ -8,6 +8,7 @@ import { recognizeFilesystem } from "./filesystem";
 import { recognizeFind } from "./find";
 import { recognizeGit } from "./git";
 import { recognizeGoWorkflow } from "./go";
+import { recognizeJq } from "./jq";
 import { unsupported } from "./helpers";
 import { informationNames, recognizeInformation } from "./information";
 import { recognizeMakeWorkflow } from "./make";
@@ -75,6 +76,7 @@ export function recognizeCommand(
   if (informationNames.has(name))
     return recognizeInformation(node, invocation, ctx, cwd, name);
   if (name === "sed") return recognizeSed(node, invocation);
+  if (name === "jq") return recognizeJq(node, invocation);
   if (name === "uniq") return recognizeUniq(node, invocation);
   if (name === "find") return recognizeFind(node, invocation);
   if (name === "dd") return recognizeDd(node, invocation);

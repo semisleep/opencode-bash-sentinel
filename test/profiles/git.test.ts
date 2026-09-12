@@ -60,6 +60,18 @@ describe("git profile", () => {
     ask("git status --date=short");
   });
 
+  it("allows read-only git check-ignore queries", () => {
+    allow("git check-ignore -v .agents/skills/why-ask/cache.json");
+    allow("git check-ignore --verbose src/foo.ts");
+    allow("git check-ignore -n src/foo.ts");
+    allow("git check-ignore -q src/foo.ts");
+    allow("git check-ignore --no-index -z src/foo.ts");
+    allow("git -C /tmp/repo check-ignore -v x");
+    ask("git check-ignore --stdin");
+    ask("git check-ignore -x src/foo.ts");
+    ask("git check-ignore --quiet=always src/foo.ts");
+  });
+
   it("allows merge filters on git log", () => {
     allow("git log --oneline hide_prefilled..main --merges");
     allow("git log --merges --oneline -5");
