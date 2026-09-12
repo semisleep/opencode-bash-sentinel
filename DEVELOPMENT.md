@@ -109,7 +109,8 @@ Integration assumptions currently verified against OpenCode 1.18.29 include:
 - a successful automatic approval replies `once`;
 - human/plugin reply races may yield a benign not-found result;
 - server password configuration requires basic authorization;
-- `deny` and previously granted session-wide permission take precedence before this analysis can help.
+- `deny` and previously granted session-wide permission take precedence before this analysis can help;
+- the optional agent guidance (`guidance` option, on by default) is injected through the `experimental.chat.system.transform` hook, which the 1.18.29 SDK types as `(input, output) => Promise<void>` with an in-place `output.system.push`. The `experimental.` prefix carries no upstream stability promise: if the engine renames, removes, or stops invoking the hook (including on v2-only request paths), the guidance silently disappears — advisory-only fail-open, no permission verdict is affected. Requests without a `sessionID` (hidden agents such as title/compaction) are skipped. Re-verify hook invocation when changing the supported engine range.
 
 Re-verify these assumptions when changing the supported OpenCode engine range.
 

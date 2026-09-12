@@ -145,6 +145,9 @@ The `edit` route is optional but recommended for consistent workspace and `.git`
 | `logPath` | `~/.local/share/opencode/bash-sentinel-audit.jsonl` | Audit-log destination |
 | `sensitivePaths` | `[]` | Extra sensitive-read roots, unioned with the built-in defaults (additive only) |
 | `alert` | `false` | `true`, or `{ "sound": true, "mark": true }` per channel. `sound` also accepts a sound-file path. `mark` colors the iTerm2 tab chrome, shows a blinking red tab dot, and bounces the dock icon once; it clears when the permission is replied. Other terminals ignore the mark sequences |
+| `guidance` | built-in text | System-prompt nudge telling the agent to prefer simple literal shell commands over ad-hoc scripts, because unrecognized script execution always prompts. A string replaces the text; `false` disables injection. Advisory only — it never changes a permission verdict, and it rides an experimental engine hook that may silently disappear on engine upgrades |
+
+By default the plugin injects this guidance into the system prompt of every session-bound request, steering the agent toward command forms the analyzer can positively recognize (fewer prompts, faster progress). Set `"guidance": false` if you do not want a permission plugin touching prompts.
 
 ## Development and provenance
 

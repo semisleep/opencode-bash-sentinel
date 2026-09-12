@@ -710,3 +710,53 @@ describe("audit log", () => {
     await expect(fs.access(logPath)).rejects.toThrow()
   })
 })
+
+describe("system prompt guidance", () => {
+  async function transform(
+    hooks: Awaited<ReturnType<Plugin>>,
+    sessionID?: string,
+  ) {
+    const output = { system: [] as string[] }
+    await hooks["experimental.chat.system.transform"]!(
+      { sessionID, model: {} as never },
+      output as never,
+    )
+    return output.system
+  }
+
+  it("appends the default guidance for session-bound requests", async () => {
+    const hooks = await makePlugin()
+    const system = await transform(hooks, "ses_456")
+    expect(system).toHaveLength(1)
+    expect(system[0]).toContain("opencode-bash-sentinel")
+    expect(system[0]).toContain("temporary script")
+  })
+
+  it("skips session-less requests (hidden agents)", async () => {
+    const hooks = await makePlugin()
+    expect(await transform(hooks, undefined)).toHaveLength(0)
+  })
+
+  it("does not register the hook when disabled", async () => {
+    const hooks = await makePlugin({ guidance: false })
+    expect(hooks["experimental.chat.system.transform"]).toBeUndefined()
+  })
+
+  it("uses a custom text when provided", async () => {
+    const hooks = await makePlugin({ guidance: "prefer plain commands" })
+    expect(await transform(hooks, "ses_456")).toEqual(["prefer plain commands"])
+  })
+
+  it("empty string falls back to the default text, not off", async () => {
+    const hooks = await makePlugin({ guidance: "" })
+    const system = await transform(hooks, "ses_456")
+    expect(system).toHaveLength(1)
+    expect(system[0]).toContain("opencode-bash-sentinel")
+  })
+
+  it("the event hook still works alongside guidance", async () => {
+    const hooks = await makePlugin()
+    await emit(hooks, askedEvent({ metadata: { command: "cat /etc/hosts" } }))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+})

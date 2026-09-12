@@ -31,9 +31,27 @@ export interface BashSentinelOptions {
     sound?: boolean | string
     mark?: boolean
   }
+  /**
+   * System-prompt guidance for the agent (experimental engine hook):
+   * unset/true = built-in text, string = custom text, false = off. Advisory
+   * only — it never affects permission verdicts.
+   */
+  guidance?: boolean | string
 }
 
 const DEFAULT_LOG_PATH = "~/.local/share/opencode/bash-sentinel-audit.jsonl"
+
+// Advisory nudge toward the analyzer's positive-recognition surface: the
+// forms listed here are examples, not a catalogue claim, and the agent is
+// told to prefer plain commands only when they are equally expressive.
+const DEFAULT_GUIDANCE = `## Bash gate guidance (opencode-bash-sentinel)
+
+A permission gate auto-approves only literal, statically recognizable Bash commands; anything else prompts the user and stalls your turn. To keep progress unattended:
+
+- Prefer plain commands over ad-hoc scripts: rg/grep for search, ls/cat to inspect, sed -i for mechanical edits, cp/mv/mkdir/rm and git for workspace changes, npm/pip/cargo/go/make (or npx with a dependency declared in package.json) for builds and tests.
+- Avoid shapes that always prompt: running a temporary script you just wrote, heredocs, pipes into interpreters (\`| sh\`, \`| python\`), and $VARS or $(cmd) in path positions. Write files with the edit tool, not heredocs; send scratch output to the system temp dir (/tmp).
+- One unrecognized segment escalates an entire \`&&\`/\`;\` line; split mixed lines so recognized parts do not wait on the rest.
+- When a form prompts, restructure it into simpler commands instead of retrying cosmetic variations. Reserve scripts for logic that genuinely cannot be a few plain commands, and expect that prompt.`
 
 const auditTails = new Map<string, Promise<void>>()
 
@@ -68,7 +86,21 @@ export const BashSentinelPlugin: Plugin = async (input, options) => {
 
   void probeTransport(input, config)
 
+  // Registered only while guidance is enabled: if the engine never calls the
+  // experimental hook (renamed, removed, or a v2-only request path), the
+  // guidance silently disappears - fail-open for an advisory feature. Hidden
+  // agents (title, compaction) can request without a session and are skipped.
+  const guidance = config.guidance
   return {
+    ...(guidance !== undefined && {
+      "experimental.chat.system.transform": async (
+        { sessionID }: { sessionID?: string },
+        output: { system: string[] },
+      ) => {
+        if (!sessionID) return
+        output.system.push(guidance)
+      },
+    }),
     event: async ({ event }) => {
       // The published SDK types lag behind the server's event stream (the
       // server forwards every event as `{ id, type, properties }`), so widen
@@ -300,6 +332,7 @@ function parseOptions(options: unknown): {
   sensitivePaths: string[]
   scratchPaths: string[] | false | undefined
   alert: AlertConfig | undefined
+  guidance: string | undefined
 } {
   const raw = (options ?? {}) as BashSentinelOptions
   return {
@@ -315,6 +348,12 @@ function parseOptions(options: unknown): {
           ? raw.scratchPaths.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
           : undefined,
     alert: parseAlertOption(raw.alert),
+    guidance:
+      raw.guidance === false
+        ? undefined
+        : typeof raw.guidance === "string" && raw.guidance.length > 0
+          ? raw.guidance
+          : DEFAULT_GUIDANCE,
   }
 }
 
