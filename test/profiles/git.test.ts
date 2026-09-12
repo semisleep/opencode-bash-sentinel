@@ -59,4 +59,70 @@ describe("git profile", () => {
     ask("git log --format %h");
     ask("git status --date=short");
   });
+
+  it("allows merge filters on git log", () => {
+    allow("git log --oneline hide_prefilled..main --merges");
+    allow("git log --merges --oneline -5");
+    allow("git log --no-merges --oneline");
+    ask("git show --merges");
+  });
+
+  it("allows listing-only git branch forms", () => {
+    allow("git branch");
+    allow("git branch -a");
+    allow("git branch --all");
+    allow("git branch -r");
+    allow("git branch -v");
+    allow("git branch -vv");
+    allow("git branch -av");
+    allow("git branch --remotes");
+    allow("git branch --verbose");
+    allow("git branch --show-current");
+    allow("git branch -a --format='%(refname:short)'");
+    allow("git branch --list hide_prefilled");
+    allow("git branch --list 'hide*'");
+    allow("git -C /tmp/repo branch -a");
+    ask("git branch hide_prefilled");
+    ask("git branch -a hide_prefilled");
+    ask("git branch -d hide_prefilled");
+    ask("git branch -D hide_prefilled");
+    ask("git branch -m renamed");
+    ask("git branch -M renamed");
+    ask("git branch -c copied");
+    ask("git branch -C copied");
+    ask("git branch -f topic main");
+    ask("git branch --force topic");
+    ask("git branch -u origin/main");
+    ask("git branch --set-upstream-to=origin/main");
+    ask("git branch --unset-upstream");
+    ask("git branch --edit-description");
+    ask("git branch --contains HEAD");
+    ask("git branch -S x");
+  });
+
+  it("allows read-only git merge-base", () => {
+    allow("git merge-base hide_prefilled main");
+    allow("git merge-base --all main hide_prefilled");
+    allow("git merge-base -a main hide_prefilled");
+    allow("git merge-base --is-ancestor main hide_prefilled");
+    allow("git merge-base --independent main hide_prefilled topic");
+    allow("git merge-base --octopus main topic other");
+    allow("git merge-base --fork-point main hide_prefilled");
+    allow("git -C /tmp/repo merge-base main HEAD");
+    ask("git merge-base");
+    ask("git merge-base -x main");
+    ask("git merge-base --exec cmd main");
+  });
+
+  it("allows composed branch, log, and merge-base inspection lines", () => {
+    allow(
+      "git branch -a && git log --oneline -5 main && git log --oneline -5 hide_prefilled",
+    );
+    allow(
+      "git merge-base hide_prefilled main && git diff hide_prefilled...main --stat -- src/a src/b | head -40",
+    );
+    allow(
+      "git diff hide_prefilled...main --stat -- src/a/ && git log --oneline hide_prefilled..main --merges | head -5; git diff hide_prefilled...main -- src/a/b.ts | head -500",
+    );
+  });
 });

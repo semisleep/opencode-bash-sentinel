@@ -10,6 +10,8 @@ const READ_SUBCOMMANDS = new Set([
   "rev-parse",
   "ls-files",
   "grep",
+  "branch",
+  "merge-base",
 ]);
 
 const ALL_SUBCOMMANDS = new Set([
@@ -53,6 +55,7 @@ const FLAGS: Record<string, Set<string>> = {
     "--decorate",
     "--all",
     "--graph",
+    "--merges",
     "--no-merges",
   ]),
   show: new Set([
@@ -148,6 +151,8 @@ function rejected(text: string, reason: string) {
 function validArguments(subcommand: string, args: string[]) {
   if (subcommand === "commit") return commitArguments(args);
   if (subcommand === "fetch") return fetchArguments(args);
+  if (subcommand === "branch") return branchArguments(args);
+  if (subcommand === "merge-base") return mergeBaseArguments(args);
   if (subcommand === "log" || subcommand === "show" || subcommand === "diff")
     return historyArguments(subcommand, args);
   const allowed = FLAGS[subcommand];
@@ -224,6 +229,48 @@ function fetchArguments(args: string[]) {
   if (operands.length === 0) return true;
   if (!safeRemote(operands[0]!)) return false;
   return operands.slice(1).every(safeRefspec);
+}
+
+function branchArguments(args: string[]) {
+  let listing = false;
+  for (const argument of args) {
+    if (argument === "--list") {
+      listing = true;
+      continue;
+    }
+    if (argument.startsWith("-")) {
+      if (
+        !/^-[arv]+$/.test(argument) &&
+        argument !== "--all" &&
+        argument !== "--remotes" &&
+        argument !== "--verbose" &&
+        argument !== "--show-current" &&
+        !argument.startsWith("--format=")
+      )
+        return false;
+      continue;
+    }
+    if (!listing) return false;
+  }
+  return true;
+}
+
+function mergeBaseArguments(args: string[]) {
+  const flags = new Set([
+    "-a",
+    "--all",
+    "--is-ancestor",
+    "--independent",
+    "--octopus",
+    "--fork-point",
+  ]);
+  let revs = 0;
+  for (const argument of args) {
+    if (argument.startsWith("-")) {
+      if (!flags.has(argument)) return false;
+    } else revs++;
+  }
+  return revs > 0;
 }
 
 function safeRemote(remote: string) {
