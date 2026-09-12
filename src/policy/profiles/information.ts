@@ -1,7 +1,7 @@
 import type { CommandProfile } from "../types";
 
 const INFORMATION_FORMS: Record<string, RegExp> = {
-  date: /^$/,
+  date: /^(?: -(?:u|R)| -I\w*)*(?: \+[^\s]+)?$/,
   uname: /^(?: -(?:[asnrvmpio]+))*$/,
   uptime: /^$/,
   whoami: /^$/,
