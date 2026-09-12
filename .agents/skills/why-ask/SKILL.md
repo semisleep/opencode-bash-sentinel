@@ -9,8 +9,12 @@ Two intake modes:
 
 - **History mode (default)**: collect the ask commands yourself from the
   runtime audit log — the user does not need to paste anything. Default
-  scope: the 10 most recent *distinct* ask commands. If the user's request
-  names a count ("最近 20 条", "last 5", "再往前 50 条"), use that count.
+  scope: the 10 most recent *distinct* ask commands, and analyze ALL of
+  them. Never ask the user which entries to check — no question dialog, no
+  selection step; any ambiguity about scope resolves silently to the
+  default batch, and you just state the chosen scope in the output. Only if
+  the user's request names a count ("最近 20 条", "last 5", "再往前 50 条")
+  does the count change.
 - **Paste mode (fallback)**: the user pasted specific commands, or audit is
   off and there is no history to read.
 
@@ -223,3 +227,6 @@ capped at 200):
   difference.
 - Never serve a cached conclusion whose `reason` no longer matches the
   audit line.
+- Never pop a question dialog asking which log entries to analyze —
+  default to the 10 most recent distinct ask commands and check every one;
+  only the user's explicit count request overrides that number.
