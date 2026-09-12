@@ -71,8 +71,24 @@ Attack surfaces to cover systematically:
 
 ## Step 3 — Probe mechanically, not by eyeballing
 
-Write a throwaway probe script (in the system temp dir, never in the repo)
-that imports the real analyzer and prints unexpected verdicts, e.g.:
+Default: the resident probe at `.agents/skills/why-ask/probe.ts`. Write the
+sample commands to `.agents/skills/why-ask/probes.txt` (gitignored scratch,
+one command per line, `#` comments allowed) with the Write tool, then run:
+
+```bash
+npx tsx .agents/skills/why-ask/probe.ts --units .agents/skills/why-ask/probes.txt
+```
+
+It uses the real default workspace context (live git baseline), so verdicts
+match the runtime plugin. It auto-approves when the session workspace is this
+repo and `package.json` is clean at the session baseline — expect one prompt
+otherwise (foreign workspace, mid-edit package.json). Commands must travel
+via the file or stdin, never argv: wildcard- or `$`-bearing arguments fail
+the visible-argument check.
+
+For expectation-driven attack matrices that need a FAKE context (fixed clean
+baseline, foreign homedir, both-cwd probes), fall back to a throwaway script
+in the system temp dir that imports the real analyzer:
 
 ```ts
 import { analyzeWorkspacePolicy } from "<repo>/src/workspace-policy"
@@ -93,9 +109,8 @@ for (const source of SAMPLES) {
 }
 ```
 
-Run it with `npx tsx <file>`. Alternatively express the samples as a vitest
-file under the system temp dir and run vitest with an explicit config include
-— but never commit probe files to the repo. Delete them when done.
+Run it with `npx tsx <file>` (this shape prompts once — the temp script is
+outside the trust baseline by design). Delete it when done.
 
 Ground-truth every suspicious verdict by hand before reporting it: run the
 exact command shape through your knowledge of the real unix tool semantics. A
@@ -157,7 +172,8 @@ where to push.
 
 - Never modify `src/`, `test/`, or docs while red-teaming — findings only,
   fixes happen after the maintainer picks a direction (AGENTS.md).
-- Probe scripts live in the system temp dir and are deleted afterwards.
+- Resident probe first (`.agents/skills/why-ask/probe.ts` + `probes.txt`);
+  temp-dir scripts only for fake-context matrices, deleted afterwards.
 - If a probe would need real network, real deletions, or real sudo to
   "verify" — do not run it; the analyzer's verdict is the system under test,
   not your shell.

@@ -1,3 +1,4 @@
 .reference/
 node_modules/
 .agents/skills/why-ask/cache.json
+.agents/skills/why-ask/probes.txt

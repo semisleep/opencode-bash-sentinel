@@ -70,8 +70,28 @@ the cost of supporting it — including whether that cost is architectural.
 ## Step 1 — Reproduce with the real analyzer, never by guessing
 
 The audit line already carries the engine's `reason` — that is ground
-truth. Reproduce locally to verify it and to explore context sensitivity,
-in a throwaway script (system temp dir, not the repo), run with `npx tsx`:
+truth. Reproduce locally with the resident probe. Write the batch to
+`.agents/skills/why-ask/probes.txt` (gitignored scratch; one command per
+line, `#` comments allowed) with the Write tool, then run:
+
+```bash
+npx tsx .agents/skills/why-ask/probe.ts --units .agents/skills/why-ask/probes.txt
+```
+
+The probe uses the real default workspace context (live git baseline), so
+its verdicts match the runtime plugin for this checkout, and the invocation
+auto-approves when the session workspace is this repo with a clean,
+baseline-committed `package.json` declaring `tsx`. Commands travel via the
+file (or stdin) — never argv: wildcard- or `$`-bearing arguments fail the
+visible-argument check and would prompt. A single quick command without
+wildcards can also be piped: `printf '%s\n' 'cmd' | npx tsx .agents/skills/why-ask/probe.ts`.
+
+Context sensitivity is real and often IS the answer: `cwd` vs `workspace`
+drift, a dirty git tree (git destructive ops escalate only when dirty),
+sensitive roots under `$HOME`. The audit log does NOT record cwd/baseline.
+The resident probe always uses the LIVE context; for counterfactuals (fake
+clean/dirty baseline, foreign homedir, both-cwd comparison), fall back to a
+throwaway script in the system temp dir and expect exactly one prompt:
 
 ```ts
 import { analyzeWorkspacePolicy } from "<repo>/src/workspace-policy"
@@ -87,12 +107,9 @@ const ctx = {
 console.log(analyzeWorkspacePolicy(process.argv[2] ?? "your command", ctx))
 ```
 
-Context sensitivity is real and often IS the answer: `cwd` vs `workspace`
-drift, a dirty git tree (git destructive ops escalate only when dirty),
-sensitive roots under `$HOME`. The audit log does NOT record cwd/baseline,
-so when the reason is context-sensitive ("external write", "sensitive
-external read", git dirt-gated forms), rerun under both baselines and say
-explicitly that the verdict depends on context.
+When the reason is context-sensitive ("external write", "sensitive external
+read", git dirt-gated forms), rerun under both baselines and say explicitly
+that the verdict depends on context.
 
 Read `decision.reason` — it names the failing rule (e.g. "unsupported ...
 option", "unrecognized command", "not a single supported command",
@@ -231,7 +248,9 @@ capped at 200):
 - Analysis only. Do not edit `src/`, `test/`, or docs while running this
   skill — implementing needs the maintainer's go-ahead (AGENTS.md), and
   architecture-level ideas need an ADR proposal, not code.
-- Probe scripts go in the system temp dir and are deleted afterwards.
+- Probe with the resident probe first (`.agents/skills/why-ask/probe.ts` +
+  `probes.txt`); throwaway scripts go in the system temp dir, are used only
+  for counterfactual contexts, and are deleted afterwards.
 - If the runtime reason and your local reproduction disagree, the runtime
   context (baseline, cwd, audit line) wins — report both and explain the
   difference — unless the audit `build` field identifies stale code (see
