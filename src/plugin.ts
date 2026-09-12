@@ -48,8 +48,10 @@ const DEFAULT_GUIDANCE = `## Bash gate guidance (opencode-bash-sentinel)
 
 A permission gate auto-approves only literal, statically recognizable Bash commands; anything else prompts the user and stalls your turn. To keep progress unattended:
 
-- Prefer plain commands over ad-hoc scripts: rg/grep for search, ls/cat to inspect, sed -i for mechanical edits, cp/mv/mkdir/rm and git for workspace changes, npm/pip/cargo/go/make (or npx with a dependency declared in package.json) for builds and tests.
-- Avoid shapes that always prompt: running a temporary script you just wrote, heredocs, pipes into interpreters (\`| sh\`, \`| python\`), and $VARS or $(cmd) in path positions. Write files with the edit tool, not heredocs; send scratch output to the system temp dir (/tmp).
+- Prefer plain commands over ad-hoc scripts: rg/grep for search, ls/cat to inspect, cp/mv/mkdir/rm and git for workspace changes, npm/pip/cargo/go/make (or npx with a dependency declared in package.json) for builds and tests.
+- Avoid shapes that always prompt: running a temporary script you just wrote, heredocs, pipes into interpreters (\`| sh\`, \`| python\`), and $VARS or $(cmd) wherever an argument names a path, a sed/awk-style script, or an option value. Send scratch output to the system temp dir (/tmp).
+- Modify existing files with the edit tool, never scripted rewrites: \`python3 - <<EOF\` replace loops and \`perl -i\` one-liners always prompt, hide the exact change, and silently no-op when the needle doesn't match, while the edit tool shows a precise before/after and fails loudly on mismatch. sed -i is for mechanical renames across many files.
+- When a command needs a computed value (line number, PID, file list), run the producer first, read its output, then rerun with the literal: \`sed -n "$(rg -n pattern f | cut -d: -f1)p" f\` prompts, while \`rg pattern f\` then \`sed -n 12p f\` runs unattended.
 - One unrecognized segment escalates an entire \`&&\`/\`;\` line; split mixed lines so recognized parts do not wait on the rest.
 - When a form prompts, restructure it into simpler commands instead of retrying cosmetic variations. Reserve scripts for logic that genuinely cannot be a few plain commands, and expect that prompt.`
 
