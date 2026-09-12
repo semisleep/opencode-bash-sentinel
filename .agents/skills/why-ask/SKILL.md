@@ -1,26 +1,63 @@
 ---
 name: why-ask
-description: Explains why a specific bash command received an "ask" verdict from opencode-bash-sentinel instead of auto-approve, and evaluates what supporting it would cost. Use when the user pastes commands that look harmless but still prompt, asks why something asks, or asks what it takes to auto-allow a new command or flag.
+description: Explains why bash commands received an "ask" verdict from opencode-bash-sentinel instead of auto-approve, and evaluates what supporting them would cost. Use when the user asks why commands keep prompting, wants recent asks reviewed from the audit history (no pasting needed), pastes commands that look harmless but still prompt, or asks what it takes to auto-allow a new command or flag. Defaults to the 10 most recent distinct ask commands (user-overridable count) and caches conclusions so repeated runs skip already-analyzed commands.
 ---
 
-# Explain and evaluate an "ask" verdict
+# Explain and evaluate "ask" verdicts
 
-The user will paste one or more commands that the sentinel turned into an
-"ask" (native permission dialog) even though the user believes they are
-harmless. Your job is a forensic answer, not a fix: find the exact rule that
-produced the ask, judge whether the command is genuinely harmless, and if so
-assess the cost of supporting it — including whether that cost is
-architectural.
+Two intake modes:
+
+- **History mode (default)**: collect the ask commands yourself from the
+  runtime audit log — the user does not need to paste anything. Default
+  scope: the 10 most recent *distinct* ask commands. If the user's request
+  names a count ("最近 20 条", "last 5", "再往前 50 条"), use that count.
+- **Paste mode (fallback)**: the user pasted specific commands, or audit is
+  off and there is no history to read.
+
+Your job is a forensic answer, not a fix: find the exact rule that produced
+each ask, judge whether the command is genuinely harmless, and if so assess
+the cost of supporting it — including whether that cost is architectural.
+
+## Step 0 — Collect candidates and check the cache
+
+1. Audit log: `~/.local/share/opencode/bash-sentinel-audit.jsonl` (JSONL,
+   one event per line; ask events look like
+   `{"gate":"bash","command":"...","reason":"...","action":"escalate"}`).
+   It only exists while `audit: true` is set in the plugin config.
+2. Extract recent asks with one plain command:
+
+   ```bash
+   rg '"action":"escalate"' ~/.local/share/opencode/bash-sentinel-audit.jsonl | tail -200
+   ```
+
+   If that prompts, fall back to `wc -l` on the file plus the Read tool
+   with an offset near the end. Do not write ad-hoc jq/python parsers for
+   this — parse the JSONL lines yourself.
+3. From those lines, build the batch: drop `gate:"transport"` lines;
+   dedup by exact command string (the most recent occurrence wins, its
+   `reason` is the ground truth); order most-recent-first; take the first
+   N (default 10). Near-duplicates that differ only in arguments are
+   separate entries.
+4. Sanity check: if a `(transport probe)` degraded line sits near those
+   timestamps, the asks may be transport failure (all-prompts mode), not
+   analyzer verdicts — say so and stop.
+5. Cache: read `.agents/skills/why-ask/cache.json` (repo-relative,
+   gitignored per-checkout local state — never commit it) if it exists
+   (schema below). For each candidate:
+   - cached entry with the same command AND same `reason` → serve from
+     cache, skip analysis;
+   - cached entry whose `reason` differs from the audit line → the
+     analyzer changed, re-analyze and overwrite;
+   - the user explicitly asked to re-analyze ("重新分析", "re-analyze",
+     "ignore cache") → bypass the cache for the whole batch.
+6. If the log is missing or has no escalate lines: report that audit
+   appears off and fall back to paste mode.
 
 ## Step 1 — Reproduce with the real analyzer, never by guessing
 
-Every ask has a machine-readable reason. Get it before forming any theory.
-
-1. If runtime audit is on (`audit: true`), first check the ground truth:
-   `~/.local/share/opencode/bash-sentinel-audit.jsonl` — escalate lines carry
-   the exact `reason` string the engine emitted for this command.
-2. Then reproduce locally in a throwaway script (system temp dir, not the
-   repo), run with `npx tsx`:
+The audit line already carries the engine's `reason` — that is ground
+truth. Reproduce locally to verify it and to explore context sensitivity,
+in a throwaway script (system temp dir, not the repo), run with `npx tsx`:
 
 ```ts
 import { analyzeWorkspacePolicy } from "<repo>/src/workspace-policy"
@@ -38,13 +75,15 @@ console.log(analyzeWorkspacePolicy(process.argv[2] ?? "your command", ctx))
 
 Context sensitivity is real and often IS the answer: `cwd` vs `workspace`
 drift, a dirty git tree (git destructive ops escalate only when dirty),
-sensitive roots under `$HOME`. When a command's verdict surprises the user,
-rerun it under both baselines and both cwds before concluding anything.
+sensitive roots under `$HOME`. The audit log does NOT record cwd/baseline,
+so when the reason is context-sensitive ("external write", "sensitive
+external read", git dirt-gated forms), rerun under both baselines and say
+explicitly that the verdict depends on context.
 
 Read `decision.reason` — it names the failing rule (e.g. "unsupported ...
 option", "unrecognized command", "not a single supported command",
-"sensitive external read", "external write", ".git red line"). Map it to the
-constitution section it comes from (`ARCHITECTURE.md` §3 completeness /
+"sensitive external read", "external write", ".git red line"). Map it to
+the constitution section it comes from (`ARCHITECTURE.md` §3 completeness /
 recognition, §4 situations, §5 aggregation, red lines in §1).
 
 ## Step 2 — Ground-truth the harmlessness claim
@@ -136,14 +175,51 @@ decision in disguise:
 End with a one-line verdict: `profile-level, ~N files, no invariant touched`
 or `architecture — ADR required because <which invariant/section>`.
 
+## Step 5 — Write back the cache
+
+After analyzing, update `.agents/skills/why-ask/cache.json` (repo-relative,
+gitignored; JSON, this schema — keep an `entries` array, newest first,
+capped at 200):
+
+```json
+{
+  "entries": [
+    {
+      "command": "rg -r ... | head",
+      "reason": "dynamic rg",
+      "conclusion": "correct-ask | should-allow",
+      "cost": "none | profile | ADR",
+      "summary": "one-line explanation naming the triggering fact/rule",
+      "analyzedAt": "2026-09-12T13:30:00.000Z"
+    }
+  ]
+}
+```
+
+- Write the file only when at least one entry was added or overwritten —
+  an all-cached run must not rewrite it.
+- The cache path is inside the workspace, so the write auto-approves
+  without a prompt; that is the reason it lives in the repo. Keep it
+  gitignored — it is per-machine local state, not project content.
+- Do not store multi-paragraph essays in `summary` — one line; the full
+  reasoning lives in your reply, not the cache.
+
+## Output
+
+- New commands: full per-command treatment (Steps 1–4).
+- Cached commands: one line each, marked `(cached)`, e.g.
+  `rg -r ... — dynamic rg, correct-ask (cached)`.
+- Finish with a summary table: command / correct-ask vs should-allow /
+  cost (none | profile | ADR) / new | cached.
+
 ## Rules
 
 - Analysis only. Do not edit `src/`, `test/`, or docs while running this
   skill — implementing needs the maintainer's go-ahead (AGENTS.md), and
   architecture-level ideas need an ADR proposal, not code.
 - Probe scripts go in the system temp dir and are deleted afterwards.
-- Answer per command, then a summary table: command / correct-ask vs
-  should-allow / cost (none | profile | ADR).
 - If the runtime reason and your local reproduction disagree, the runtime
   context (baseline, cwd, audit line) wins — report both and explain the
   difference.
+- Never serve a cached conclusion whose `reason` no longer matches the
+  audit line.
