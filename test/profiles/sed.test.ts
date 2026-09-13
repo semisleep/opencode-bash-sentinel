@@ -48,4 +48,17 @@ describe("sed profile", () => {
     ask("sed -n '/a;b/p' README.md");
     ask("sed -n '/x/,/y/p;s/a/b/w /tmp/out' README.md");
   });
+
+  it("consumes the BSD empty backup suffix after -i", () => {
+    allow("sed -i '' -e 's/a/b/g' src/file.ts");
+    allow("sed -i '' 's/a/b/' doc.md");
+    allow("sed -i '' -e 's|a|b|g' doc.md");
+    allow("sed -i '' -e 's/a \\/ b/c \\/ d/g' doc.md");
+    allow(
+      "sed -i '' -e 's/a/b/g' doc.md && sed -i '' -e 's/c/d/g' doc/other.md",
+    );
+    ask("sed -i '' doc.md");
+    ask("sed -i bak -e 's/a/b/g' doc.md");
+    ask("sed -i '' -e 's/a/b/w /tmp/out' doc.md");
+  });
 });

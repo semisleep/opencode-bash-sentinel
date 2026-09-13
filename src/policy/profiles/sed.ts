@@ -20,6 +20,11 @@ export function recognizeSed(
     const value = values[index]!;
     if (value === "-i" || value === "--in-place") {
       writesInPlace = true;
+      // BSD sed requires an extension argument after -i; an empty literal
+      // is the macOS no-backup suffix, not a script. Consume it so it is
+      // not misparsed as an invalid program; non-empty suffixes keep
+      // failing closed when they land in the program bucket.
+      if (values[index + 1] === "") index++;
       continue;
     }
     if (value.startsWith("-i") || value.startsWith("--in-place="))
