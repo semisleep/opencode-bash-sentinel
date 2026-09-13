@@ -68,6 +68,17 @@ describe("search profiles", () => {
     ask("grep --no-heading pattern file");
   });
 
+  it("supports rg's --include-zero display flag without leaking to grep", () => {
+    allow("rg -ln pattern src --include-zero");
+    allow("rg --include-zero -c pattern src");
+    allow("rg --count --include-zero pattern src");
+    ask("grep --include-zero pattern file");
+    ask("rg --include-zero=x pattern src");
+    allow(
+      'rg -n "CustomerTagGroup" src/features/admin/server/routes.ts src/features/admin/shared/settings.ts | head -20; rg -ln "CustomerTagGroupSetting\\[\\]|saveCustomerTagGroup|configuredCustomerTagGroups" src --include-zero 2>/dev/null; rg -rln "setConfiguredCustomerTagGroups|saveConfigured" src | head',
+    );
+  });
+
   it("allows shell glob path operands behind a literal component", () => {
     allow("rg -n pattern src/*.ts");
     allow("rg -n pattern src/server/[a-c]?.ts");

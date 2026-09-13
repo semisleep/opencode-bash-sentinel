@@ -31,6 +31,7 @@ const OPTION_SETS = {
       "--hidden",
       "--follow",
       "--count",
+      "--include-zero",
       "--line-number",
       "--no-heading",
       "--fixed-strings",
