@@ -67,6 +67,7 @@ export function recognizeSearch(
   const paths: string[] = [];
   let hasPattern = false;
   let filesMode = false;
+  let helpForm = false;
   for (let index = 0; index < args.length; index++) {
     const entry = args[index]!;
     if (!("literal" in entry)) {
@@ -99,6 +100,12 @@ export function recognizeSearch(
         if (name === "grep")
           return unsupported(node, "unsupported grep option");
         filesMode = true;
+        continue;
+      }
+      // rg's --help prints usage and exits; grep is excluded so its class
+      // keeps failing closed on the table lookup below.
+      if (value === "--help" && name !== "grep") {
+        helpForm = true;
         continue;
       }
       if (["-e", "--regexp", "-g", "--glob", "-t", "--type"].includes(value)) {
@@ -140,7 +147,7 @@ export function recognizeSearch(
     else if (!hasPattern) hasPattern = true;
     else paths.push(value);
   }
-  if (!hasPattern && !filesMode)
+  if (!hasPattern && !filesMode && !helpForm)
     return unsupported(node, `missing ${name} pattern`);
   return paths.length
     ? pathEffects(node, paths, "read", name)
@@ -149,6 +156,8 @@ export function recognizeSearch(
         text: node.text,
         situation: "workspace-neutral-or-indeterminate",
         allowed: true,
-        reason: `${name} cwd search`,
+        reason: helpForm && !hasPattern
+          ? `${name} usage form`
+          : `${name} cwd search`,
       };
 }

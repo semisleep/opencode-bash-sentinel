@@ -79,6 +79,18 @@ describe("search profiles", () => {
     );
   });
 
+  it("supports rg's --help usage form without leaking to grep", () => {
+    allow("rg --help");
+    allow("rg --hidden --help");
+    allow("rg --help pattern src");
+    allow("ripgrep --help");
+    allow("rg --help | rg 'include-zero|--replace TEXT'");
+    ask("grep --help");
+    // Real rg treats -h as help, but the table parses it grep-style as
+    // no-filename; bare `rg -h` stays fail-closed on the missing pattern.
+    ask("rg -h");
+  });
+
   it("allows shell glob path operands behind a literal component", () => {
     allow("rg -n pattern src/*.ts");
     allow("rg -n pattern src/server/[a-c]?.ts");
