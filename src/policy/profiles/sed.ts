@@ -67,12 +67,19 @@ function safeSubstitution(program: string) {
   return flags === "" || /^(?:[gIpM]|[0-9])+$/.test(flags);
 }
 
+const ADDRESS = String.raw`(?:\d+|\$|\/(?:[^\/\n\r\\]|\\.)*\/)`;
+
 function safePrintProgram(program: string) {
   // Semicolon-joined scripts must be pure address-print lists; every segment
-  // is validated so write commands (w/W/r/s..w) never ride along.
+  // is validated so write commands (w/W/r/s..w) never ride along. Addresses
+  // stay enumerable: line numbers, `$`, and slash-delimited regexes with
+  // backslash escapes; GNU-isms (0,/re/, \#pat#, negation, {}, I/M address
+  // modifiers) stay fail-closed, and a `;` inside a regex body splits into
+  // segments that each fail the grammar.
+  const printCommand = new RegExp(`^(?:${ADDRESS})?(?:,(?:${ADDRESS}))?p$`);
   return program
     .split(";")
-    .every((command) => /^(?:\d+|\$)?(?:,(?:\d+|\$))?p$/.test(command));
+    .every((command) => printCommand.test(command));
 }
 
 function sectionEnd(program: string, start: number, delimiter: string) {
