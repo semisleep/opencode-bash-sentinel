@@ -10,6 +10,7 @@ export function recognizeSed(
   const args = invocation.args.map((argument) => argument.literal);
   if (args.some((argument) => argument === undefined))
     return unsupported(node, "dynamic sed");
+  let usageForm = false;
 
   let writesInPlace = false;
   let explicitExpressions = false;
@@ -18,12 +19,19 @@ export function recognizeSed(
   const values = args as string[];
   for (let index = 0; index < values.length; index++) {
     const value = values[index]!;
+    // --help/--version print and exit, but only after the rest of the
+    // line parses; an unknown flag riding along still fails below.
+    if (value === "--help" || value === "--version") {
+      usageForm = true;
+      continue;
+    }
     if (value === "-i" || value === "--in-place") {
       writesInPlace = true;
       // BSD sed requires an extension argument after -i; an empty literal
       // is the macOS no-backup suffix, not a script. Consume it so it is
-      // not misparsed as an invalid program; non-empty suffixes keep
-      // failing closed when they land in the program bucket.
+      // not misparsed as an invalid program. A non-empty literal after -i
+      // is ambiguous between a GNU script and a BSD suffix; it flows to
+      // the program bucket and fails closed unless it parses as one.
       if (values[index + 1] === "") index++;
       continue;
     }
@@ -36,12 +44,32 @@ export function recognizeSed(
       programs.push(program);
       continue;
     }
-    if (["-n", "-E", "-r"].includes(value)) continue;
+    if (value.startsWith("--expression=")) {
+      explicitExpressions = true;
+      const program = value.slice("--expression=".length);
+      if (!program) return unsupported(node, "missing sed expression");
+      programs.push(program);
+      continue;
+    }
+    if (
+      ["-n", "-E", "-r", "--quiet", "--silent", "--regexp-extended"].includes(
+        value,
+      )
+    )
+      continue;
     if (value.startsWith("-"))
       return unsupported(node, "unsupported sed option");
     if (!explicitExpressions && programs.length === 0) programs.push(value);
     else files.push(value);
   }
+  if (usageForm)
+    return {
+      kind: "command",
+      text: node.text,
+      situation: "workspace-neutral-or-indeterminate",
+      allowed: true,
+      reason: "sed usage form",
+    };
   if (programs.length === 0) return unsupported(node, "missing sed program");
   if (
     !programs.every(
@@ -75,13 +103,17 @@ function safeSubstitution(program: string) {
 const ADDRESS = String.raw`(?:\d+|\$|\/(?:[^\/\n\r\\]|\\.)*\/)`;
 
 function safePrintProgram(program: string) {
-  // Semicolon-joined scripts must be pure address-print lists; every segment
-  // is validated so write commands (w/W/r/s..w) never ride along. Addresses
-  // stay enumerable: line numbers, `$`, and slash-delimited regexes with
-  // backslash escapes; GNU-isms (0,/re/, \#pat#, negation, {}, I/M address
-  // modifiers) stay fail-closed, and a `;` inside a regex body splits into
-  // segments that each fail the grammar.
-  const printCommand = new RegExp(`^(?:${ADDRESS})?(?:,(?:${ADDRESS}))?p$`);
+  // Semicolon-joined scripts must be pure address-punctuated stream
+  // commands; every segment is validated so write commands (w/W/r/s..w)
+  // never ride along. Addresses stay enumerable: line numbers, `$`, and
+  // slash-delimited regexes with backslash escapes; GNU-isms (0,/re/,
+  // \#pat#, negation, {}, I/M address modifiers) stay fail-closed, and a
+  // `;` inside a regex body splits into segments that each fail the
+  // grammar. p prints, d drops lines from the output stream, and q quits
+  // (optionally with a numeric exit status) — none touches a file.
+  const printCommand = new RegExp(
+    `^(?:${ADDRESS})?(?:,(?:${ADDRESS}))?(?:p|d|q\\d*)$`,
+  );
   return program
     .split(";")
     .every((command) => printCommand.test(command));

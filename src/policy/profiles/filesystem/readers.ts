@@ -20,7 +20,7 @@ const GRAMMARS: Record<string, OptionGrammar> = {
     ]),
   },
   ls: {
-    short: "1AaBCdFghHiklLmnpqQrRsStUvwX",
+    short: "1AaBCdFGghHiklLmnopqQrRsStUvwX",
     long: new Set([
       "--all",
       "--almost-all",
@@ -34,19 +34,79 @@ const GRAMMARS: Record<string, OptionGrammar> = {
       "--reverse",
       "--size",
     ]),
+    longWithValue: new Map([
+      ["--color", /^(?:always|never|auto|tty)$/],
+      ["--colour", /^(?:always|never|auto|tty)$/],
+      ["--sort", /^(?:name|time|size|extension|version|none|width|ctime|mtime|atime)$/],
+      ["--time-style", /^(?:full-iso|long-iso|iso|locale)$/],
+    ]),
   },
-  head: { short: "qvz", shortWithValue: "cn", numeric: true },
-  tail: { short: "fqsvz", shortWithValue: "cn", numeric: true },
-  wc: { short: "clmwL" },
-  stat: { short: "LfZ", shortWithValue: "c" },
-  file: { short: "bEhiklLNnprsSvz" },
+  head: {
+    short: "qvz",
+    shortWithValue: "cn",
+    numeric: true,
+    long: new Set(["--quiet", "--silent", "--verbose"]),
+    longWithValue: new Map([
+      ["--lines", /^\d+$/],
+      ["--bytes", /^\d+[KMGTP]?$/],
+    ]),
+  },
+  tail: {
+    short: "fqsvz",
+    shortWithValue: "cn",
+    numeric: true,
+    long: new Set(["--quiet", "--silent", "--verbose", "--retry"]),
+    longWithValue: new Map([
+      ["--lines", /^\+?\d+$/],
+      ["--bytes", /^\+?\d+[KMGTP]?$/],
+    ]),
+  },
+  wc: {
+    short: "clmwL",
+    long: new Set([
+      "--bytes",
+      "--chars",
+      "--lines",
+      "--words",
+      "--max-line-length",
+    ]),
+  },
+  stat: {
+    short: "LfZt",
+    shortWithValue: "c",
+    longWithValue: new Map([
+      ["--format", /^.+$/],
+      ["--printf", /^.+$/],
+    ]),
+  },
+  file: {
+    short: "bEhiklLNnprsSvz",
+    long: new Set(["--mime-type", "--mime-encoding", "--extension"]),
+  },
   readlink: { short: "efmnqsvz" },
   realpath: { short: "eLmqsz" },
-  du: { short: "abchHkLmsSx" },
-  df: { short: "ahHiPkPT" },
-  diff: { short: "abBdiNqrsTtuwy", shortWithValue: "SW" },
+  du: {
+    short: "abchHkLmsSx",
+    // -d takes a depth operand, so this grammar keeps literal-only
+    // arguments and gives up bounded glob operands.
+    shortWithValue: "d",
+    long: new Set(["--apparent-size"]),
+    longWithValue: new Map([["--max-depth", /^\d+$/]]),
+  },
+  df: { short: "ahHiPkPTl" },
+  diff: {
+    short: "abBdiNqrsTtuwy",
+    shortWithValue: "USW",
+    long: new Set(["--ignore-file-name-case"]),
+    longWithValue: new Map([["--unified", /^\d+$/]]),
+  },
   cmp: { short: "bls", shortWithValue: "in" },
-  cut: { short: "Dnsz", shortWithValue: "bcdf" },
+  cut: {
+    short: "Dnsz",
+    shortWithValue: "bcdf",
+    long: new Set(["--complement"]),
+    longWithValue: new Map([["--output-delimiter", /^.+$/]]),
+  },
   strings: { short: "adlx", shortWithValue: "enstT" },
   // Read-only operand model; output (-o/--output), temp (-T), and
   // --compress-program forms are deliberately not in the grammar.
@@ -82,6 +142,21 @@ export function recognizeFilesystemReader(
   if (!grammar) return;
   const args = literalOrGlobArguments(invocation, grammar);
   if (!args) return unsupported(node, `dynamic ${name}`);
+  // --help prints usage and exits; other options must still parse, so an
+  // unknown flag riding along keeps failing closed.
+  const helpIndex = args.indexOf("--help");
+  if (helpIndex >= 0) {
+    const rest = args.filter((_, index) => index !== helpIndex);
+    if (!parseArguments(rest, grammar))
+      return unsupported(node, `unsupported ${name}`);
+    return {
+      kind: "command",
+      text: node.text,
+      situation: "workspace-neutral-or-indeterminate",
+      allowed: true,
+      reason: `${name} usage form`,
+    };
+  }
   const parsed = parseArguments(args, grammar);
   if (!parsed) return unsupported(node, `unsupported ${name}`);
   if (["stat", "file", "readlink", "realpath"].includes(name)) {

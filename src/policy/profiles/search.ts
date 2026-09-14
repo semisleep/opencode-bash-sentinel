@@ -23,6 +23,8 @@ const OPTION_SETS = {
       "--perl-regexp",
       "--with-filename",
       "--no-filename",
+      "--ignore-case",
+      "--only-matching",
     ]),
   },
   default: {
@@ -36,6 +38,9 @@ const OPTION_SETS = {
       "--no-heading",
       "--fixed-strings",
       "--text",
+      "--json",
+      "--ignore-case",
+      "--only-matching",
     ]),
   },
 } as const;
@@ -102,9 +107,9 @@ export function recognizeSearch(
         filesMode = true;
         continue;
       }
-      // rg's --help prints usage and exits; grep is excluded so its class
-      // keeps failing closed on the table lookup below.
-      if (value === "--help" && name !== "grep") {
+      // --help prints usage and exits in both tools; table lookups below
+      // still govern every other shape.
+      if (value === "--help") {
         helpForm = true;
         continue;
       }
@@ -114,20 +119,34 @@ export function recognizeSearch(
         if (value === "-e" || value === "--regexp") hasPattern = true;
         continue;
       }
-      // -A/-B take a numeric context width in both tools; the width is
-      // display-only, so glued and attached spellings are positively safe.
-      if (/^-[AB]\d+$/.test(value)) continue;
+      // -A/-B/-C take a numeric context width in both tools, and -m a
+      // numeric match cap; the numbers are display-only, so glued and
+      // attached spellings are positively safe. (Handling -C here also
+      // keeps its width from being misread as the pattern, which the
+      // valueless cluster below would otherwise do.)
+      if (/^-[ABCm]\d+$/.test(value)) continue;
       if (
-        value === "-A" ||
-        value === "-B" ||
-        value === "--after-context" ||
-        value === "--before-context"
+        [
+          "-A",
+          "-B",
+          "-C",
+          "-m",
+          "--after-context",
+          "--before-context",
+          "--context",
+          "--max-count",
+        ].includes(value)
       ) {
         if (!/^\d+$/.test(literalAt(args, ++index) ?? ""))
           return unsupported(node, `unsupported ${name} option`);
         continue;
       }
-      if (/^--(?:after-context|before-context)=\d+$/.test(value)) continue;
+      if (/^--(?:after-context|before-context|context|max-count)=\d+$/.test(value))
+        continue;
+      // Colour selectors are display-only and their value is a closed set.
+      if (/^--colou?r=(?:never|always|auto|tty)$/.test(value)) continue;
+      // grep's legacy -NUM spelling is a context width.
+      if (name === "grep" && /^-\d+$/.test(value)) continue;
       // rg's -r/--replace only rewrites matched text on stdout; grep's -r is
       // valueless recursion and stays in grep's cluster set below.
       if (name !== "grep") {
@@ -137,6 +156,11 @@ export function recognizeSearch(
           continue;
         }
         if (/^(?:-r.+|--replace=.+)$/.test(value)) continue;
+        // Result ordering is display-only with a closed value set.
+        if (
+          /^--sortr?=(?:path|created|modified|size|type|none)$/.test(value)
+        )
+          continue;
       }
       const options = name === "grep" ? OPTION_SETS.grep : OPTION_SETS.default
       if (!options.short.test(value) && !options.long.has(value))

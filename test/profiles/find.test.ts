@@ -11,6 +11,11 @@ describe("find profile", () => {
     allow("find src '(' -type f -o -type l ')'");
     allow('find src -printf "%p\\n"');
     allow("find /etc -name hosts");
+    allow("find --help");
+    allow("find --version");
+    allow("find src -name '*.ts' -quit");
+    allow("find . -samefile package.json");
+    allow("find . -samefile /etc/hosts -name hosts");
   });
 
   it("asks for destructive, writing, or unknown primaries", () => {
@@ -22,6 +27,7 @@ describe("find profile", () => {
     ask("find src -newermt 2024-01-01");
     ask("find src -O3 -type f");
     ask("find src -unknown x");
+    ask("find src -samefile");
     ask("find $DIR -name x");
     ask("find src -name");
     ask("find src -type f extra-path");

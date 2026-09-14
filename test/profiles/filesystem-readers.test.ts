@@ -84,4 +84,45 @@ describe("filesystem reader profiles", () => {
     ask("ls -z src");
     ask("ls -D src");
   });
+
+  it("supports the --help usage form on readers", () => {
+    allow("cat --help");
+    allow("ls --help");
+    allow("head --help");
+    allow("wc --lines --help file");
+    ask("cat $F --help");
+    ask("cat -Z --help file");
+  });
+
+  it("supports display long forms and attached long values", () => {
+    allow("head --lines=5 file");
+    allow("head --bytes=64K file");
+    allow("tail --lines=+5 file");
+    allow("head --quiet file");
+    allow("wc --lines file");
+    allow("ls --color=auto src");
+    allow("ls --sort=time src");
+    allow("ls -G src");
+    allow("ls -o src");
+    allow("du -h -d 1");
+    allow("du -d1 src");
+    allow("du --max-depth=1");
+    allow("du --apparent-size -h");
+    allow("df -l");
+    allow("diff -U3 before after");
+    allow("diff -U 3 before after");
+    allow("diff --unified=3 before after");
+    allow("diff --ignore-file-name-case before after");
+    allow("cut --complement -f 1 file");
+    allow("stat --format=%s file");
+    allow("stat -t file");
+    allow("file --mime-type file");
+    ask("ls --sort=bogus src");
+    ask("ls --color src=x");
+    ask("head --lines=x file");
+    ask("head --lines 5 file");
+    ask("du --max-depth src");
+    ask("diff --unified=x before after");
+    ask("stat --format file");
+  });
 });

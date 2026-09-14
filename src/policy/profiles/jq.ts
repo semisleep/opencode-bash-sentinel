@@ -35,6 +35,8 @@ const VALUELESS_OPTIONS = new Set([
   "--seq",
   "--unbuffered",
   "--version",
+  "-h",
+  "--help",
 ]);
 
 export function recognizeJq(
@@ -46,7 +48,7 @@ export function recognizeJq(
     return unsupported(node, "dynamic jq");
   const values = args as string[];
   const files: string[] = [];
-  let version = false;
+  let usageForm = false;
   let filterFromFile = false;
   let index = 0;
   for (; index < values.length; index++) {
@@ -57,7 +59,8 @@ export function recognizeJq(
     }
     if (value === "-" || !value.startsWith("-")) break;
     if (VALUELESS_OPTIONS.has(value)) {
-      if (value === "--version") version = true;
+      if (value === "--version" || value === "-h" || value === "--help")
+        usageForm = true;
       continue;
     }
     if (value === "-f" || value === "--from-file") {
@@ -94,7 +97,7 @@ export function recognizeJq(
     return unsupported(node, "unsupported jq option");
   }
   const operands = values.slice(index);
-  if (operands[0] === undefined && !version && !filterFromFile)
+  if (operands[0] === undefined && !usageForm && !filterFromFile)
     return unsupported(node, "missing jq filter");
   files.push(...operands.slice(1));
   return files.length

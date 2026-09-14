@@ -22,9 +22,12 @@ describe("sed profile", () => {
     ask("sed '1,2,3p' README.md");
     ask("sed -n '1,5p;w /tmp/out' README.md");
     ask("sed -n '1,5p;s/a/b/w /tmp/out' README.md");
-    ask("sed '1,2p;3,4d' README.md");
+    allow("sed '1,2p;3,4d' README.md");
     ask("sed -n '1p;;2p' README.md");
-    ask("sed -i '1d' README.md");
+    // Read under the GNU interpretation: -i followed by a valid program.
+    // On BSD the literal would be taken as a backup suffix and the file
+    // name as the program, which errors out before any write happens.
+    allow("sed -i '1d' README.md");
     ask("sed -i.bak 's/a/b/' README.md");
     ask("sed --in-place=.bak 's/a/b/' README.md");
   });
@@ -60,5 +63,35 @@ describe("sed profile", () => {
     ask("sed -i '' doc.md");
     ask("sed -i bak -e 's/a/b/g' doc.md");
     ask("sed -i '' -e 's/a/b/w /tmp/out' doc.md");
+  });
+
+  it("supports the --help usage form", () => {
+    allow("sed --help");
+    allow("sed -n --help");
+    ask("sed $PROG --help");
+  });
+
+  it("supports stream-only quit and delete commands", () => {
+    allow("sed '5q' README.md");
+    allow("sed '10q' README.md");
+    allow("sed -n '/start/,/^$/q' README.md");
+    allow("sed '5d' README.md");
+    allow("sed -n '/x/,/y/d' README.md");
+    allow("sed '2,5d;10q' README.md");
+    allow("sed -i '' '5d' src/file.ts");
+    ask("sed '5r /tmp/inject' README.md");
+    ask("sed 'q;w /tmp/out' README.md");
+    ask("sed '5y/ab/xy/' README.md");
+  });
+
+  it("supports long option aliases and attached --expression=", () => {
+    allow("sed --quiet '5p' README.md");
+    allow("sed --silent -n '5p' README.md");
+    allow("sed --regexp-extended 's/a|b/x/' README.md");
+    allow("sed --expression='s/a/b/g' README.md");
+    allow("sed --expression='s/a/b/' --expression='s/c/d/' README.md");
+    ask("sed --expression= README.md");
+    ask("sed --unknown-option 's/a/b/' README.md");
+    allow("sed --version");
   });
 });

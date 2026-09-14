@@ -14,6 +14,14 @@ const READ_SUBCOMMANDS = new Set([
   "merge-base",
   "check-ignore",
   "stash",
+  "describe",
+  "tag",
+  "remote",
+  "reflog",
+  "shortlog",
+  "count-objects",
+  "cat-file",
+  "config",
 ]);
 
 const ALL_SUBCOMMANDS = new Set([
@@ -35,6 +43,9 @@ const FLAGS: Record<string, Set<string>> = {
   ]),
   diff: new Set([
     "--",
+    "-p",
+    "-u",
+    "--patch",
     "--stat",
     "--pickaxe-regex",
     "--pickaxe-all",
@@ -50,8 +61,15 @@ const FLAGS: Record<string, Set<string>> = {
   ]),
   log: new Set([
     "--",
+    "-p",
+    "-u",
+    "--patch",
     "--oneline",
     "--stat",
+    "--abbrev-commit",
+    "--reverse",
+    "--follow",
+    "--first-parent",
     "--pickaxe-regex",
     "--pickaxe-all",
     "--name-only",
@@ -64,7 +82,11 @@ const FLAGS: Record<string, Set<string>> = {
   ]),
   show: new Set([
     "--",
+    "-p",
+    "-u",
+    "--patch",
     "--stat",
+    "--abbrev-commit",
     "--pickaxe-regex",
     "--pickaxe-all",
     "--name-only",
@@ -126,13 +148,34 @@ export const recognizeGit: CommandProfile = (node, invocation, ctx, cwd) => {
   if (args.some((argument) => argument === undefined))
     return rejected(node.text, "dynamic git");
   const values = args as string[];
+  if (values.length === 1 && values[0] === "--version")
+    return {
+      kind: "command",
+      text: node.text,
+      situation: "workspace-neutral-or-indeterminate",
+      allowed: true,
+      reason: "git version",
+    };
   let index = 0;
   let repository = cwd;
-  if (values[0] === "-C") {
-    const resolved = values[1] && resolvePath(values[1], ctx, cwd);
-    if (!resolved) return rejected(node.text, "unresolved git -C");
-    repository = resolved;
-    index = 2;
+  let sawRepository = false;
+  // Leading global options: --no-pager is display-only, and a single -C
+  // keeps its original first-position semantics. A second -C falls through
+  // as an unknown subcommand and fails closed.
+  for (;;) {
+    if (values[index] === "--no-pager") {
+      index++;
+      continue;
+    }
+    if (values[index] === "-C" && !sawRepository) {
+      const resolved = values[index + 1] && resolvePath(values[index + 1]!, ctx, cwd);
+      if (!resolved) return rejected(node.text, "unresolved git -C");
+      repository = resolved;
+      sawRepository = true;
+      index += 2;
+      continue;
+    }
+    break;
   }
   const subcommand = values[index];
   let allowed =
@@ -169,6 +212,14 @@ function validArguments(subcommand: string, args: string[]) {
   if (subcommand === "branch") return branchArguments(args);
   if (subcommand === "merge-base") return mergeBaseArguments(args);
   if (subcommand === "stash") return stashArguments(args);
+  if (subcommand === "describe") return describeArguments(args);
+  if (subcommand === "tag") return tagArguments(args);
+  if (subcommand === "remote") return remoteArguments(args);
+  if (subcommand === "reflog") return reflogArguments(args);
+  if (subcommand === "shortlog") return shortlogArguments(args);
+  if (subcommand === "count-objects") return countObjectsArguments(args);
+  if (subcommand === "cat-file") return catFileArguments(args);
+  if (subcommand === "config") return configArguments(args);
   if (subcommand === "log" || subcommand === "show" || subcommand === "diff")
     return historyArguments(subcommand, args);
   const allowed = FLAGS[subcommand];
@@ -203,7 +254,9 @@ function historyArguments(subcommand: string, args: string[]) {
           argument.startsWith("--since=") ||
           argument.startsWith("--until=") ||
           argument.startsWith("--after=") ||
-          argument.startsWith("--before=")))
+          argument.startsWith("--before=") ||
+          argument.startsWith("--author=") ||
+          argument.startsWith("--grep=")))
     )
       continue;
     return false;
@@ -283,6 +336,135 @@ function stashArguments(args: string[]) {
   if (action === "list") return historyArguments("log", args.slice(1));
   if (action === "show") return historyArguments("show", args.slice(1));
   return false;
+}
+
+function describeArguments(args: string[]) {
+  const flags = new Set([
+    "--tags",
+    "--all",
+    "--long",
+    "--always",
+    "--exact-match",
+    "--dirty",
+    "--broken",
+    "--first-parent",
+  ]);
+  for (let index = 0; index < args.length; index++) {
+    const argument = args[index]!;
+    if (argument === "--abbrev") {
+      if (!/^\d+$/.test(args[++index] ?? "")) return false;
+      continue;
+    }
+    if (argument.startsWith("--abbrev=")) {
+      if (!/^\d+$/.test(argument.slice(9))) return false;
+      continue;
+    }
+    if (argument.startsWith("--match=") || argument.startsWith("--exclude="))
+      continue;
+    if (argument === "--match" || argument === "--exclude") {
+      if (!args[++index]) return false;
+      continue;
+    }
+    if (argument.startsWith("-")) {
+      if (!flags.has(argument)) return false;
+      continue;
+    }
+  }
+  return true;
+}
+
+// Listing is `git tag`'s default action; a bare operand without -l/--list
+// would create a tag, and -d/-a/-m/-f/-s all mutate, so only explicit
+// listing shapes with pattern operands allow.
+function tagArguments(args: string[]) {
+  let listing = false;
+  for (const argument of args) {
+    if (["-l", "--list", "-n"].includes(argument)) {
+      listing = true;
+      continue;
+    }
+    if (argument.startsWith("--format=") || argument.startsWith("--sort="))
+      continue;
+    if (argument.startsWith("-")) return false;
+    if (!listing) return false;
+  }
+  return true;
+}
+
+// Bare `git remote` lists; every other action (add, rename, remove,
+// set-url, prune, update, show) is a mutation or a network form.
+function remoteArguments(args: string[]) {
+  return (
+    args.length === 0 ||
+    (args.length === 1 && ["-v", "--verbose"].includes(args[0]!))
+  );
+}
+
+// `git reflog` defaults to show; expire/delete rewrite the reflog and
+// stay unsupported, so only `show` with plain ref operands allows.
+function reflogArguments(args: string[]) {
+  if (args.length === 0) return true;
+  if (args[0] !== "show") return false;
+  return args.slice(1).every((argument) => !argument.startsWith("-"));
+}
+
+function shortlogArguments(args: string[]) {
+  const flags = new Set([
+    "--numbered",
+    "--summary",
+    "--email",
+    "--committer",
+  ]);
+  return args.every(
+    (argument) =>
+      /^-[snec]+$/.test(argument) || !argument.startsWith("-") || flags.has(argument),
+  );
+}
+
+function countObjectsArguments(args: string[]) {
+  return args.every((argument) => argument === "-v" || argument === "--verbose");
+}
+
+// -p/-t/-s print an object's contents, type, or size; --batch forms read
+// stdin and other modes can write objects, so only these exact shapes allow.
+function catFileArguments(args: string[]) {
+  return (
+    ["-p", "-t", "-s"].includes(args[0] ?? "") &&
+    args.length === 2 &&
+    !args[1]!.startsWith("-")
+  );
+}
+
+// Read-only config access: --get* with one or two names, --list, and a
+// single bare name (which prints). Two bare names would SET a value, and
+// --add/--unset/--edit/--file and friends stay unsupported.
+function configArguments(args: string[]) {
+  const scope = new Set(["--global", "--local", "--system", "--worktree"]);
+  const display = new Set([
+    "--list",
+    "-l",
+    "--name-only",
+    "--show-origin",
+    "--show-scope",
+    "--null",
+    "-z",
+    "--int",
+    "--bool",
+    "--path",
+  ]);
+  let getMode = false;
+  const names: string[] = [];
+  for (const argument of args) {
+    if (scope.has(argument) || display.has(argument)) continue;
+    if (["--get", "--get-all", "--get-regexp"].includes(argument)) {
+      getMode = true;
+      continue;
+    }
+    if (argument.startsWith("-")) return false;
+    names.push(argument);
+  }
+  if (getMode) return names.length >= 1 && names.length <= 2;
+  return names.length <= 1;
 }
 
 function mergeBaseArguments(args: string[]) {

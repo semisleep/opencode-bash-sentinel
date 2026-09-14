@@ -42,11 +42,51 @@ describe("search profiles", () => {
     ask("rg -B");
     ask("rg -A five pattern file");
     ask("rg --after-context=wide pattern file");
-    ask("rg -C3 pattern file");
+    allow("rg -C3 pattern file");
     ask("grep -rA5 pattern file");
-    // Pre-existing quirk: separated -C 2 swallows 2 as the pattern; the
-    // misparse stays read-only -> read-only, so the allow is tolerable.
+    // Separated -C consumes its width like -A/-B, so the pattern keeps
+    // its role and file operands stay read targets.
     allow("rg -A 3 -C 2 pattern file");
+  });
+
+  it("supports -C context, -m match caps, and the legacy grep -NUM form", () => {
+    allow("rg -C 3 pattern file");
+    allow("rg --context 3 pattern file");
+    allow("rg --context=3 pattern file");
+    allow("grep -C 5 pattern file");
+    allow("rg -m 5 pattern file");
+    allow("rg -m5 pattern file");
+    allow("rg --max-count 5 pattern file");
+    allow("rg --max-count=5 pattern file");
+    allow("grep -m 2 pattern file");
+    allow("grep -3 pattern file");
+    allow("rg -C 2 -m 5 pattern file");
+    ask("rg -C");
+    ask("rg -C wide pattern file");
+    ask("rg -m 0x5 pattern file");
+    ask("rg --max-count pattern file");
+    // The width must be consumed as a width, not misread as the pattern.
+    expect(decision("rg -C 3 pattern src").units[0]?.situation).toBe(
+      "workspace-inside",
+    );
+  });
+
+  it("supports ignore-case, only-matching, colour, json, and sort forms", () => {
+    allow("rg --ignore-case pattern src");
+    allow("grep --ignore-case pattern file");
+    allow("rg --only-matching pattern src");
+    allow("grep --only-matching pattern file");
+    allow("rg --color=never pattern src");
+    allow("rg --colour=auto pattern src");
+    allow("grep --color=always pattern file");
+    allow("rg --json pattern src");
+    allow("rg --sort=path --files");
+    allow("rg --sortr=modified pattern src");
+    ask("grep --json pattern file");
+    ask("grep --sort=path pattern file");
+    ask("rg --color=sometimes pattern src");
+    ask("rg --sort=garbage pattern src");
+    ask("rg --color pattern src");
   });
 
   it("supports rg's stdout-only replacement forms", () => {
@@ -79,13 +119,13 @@ describe("search profiles", () => {
     );
   });
 
-  it("supports rg's --help usage form without leaking to grep", () => {
+  it("supports the --help usage form for rg and grep", () => {
     allow("rg --help");
     allow("rg --hidden --help");
     allow("rg --help pattern src");
     allow("ripgrep --help");
     allow("rg --help | rg 'include-zero|--replace TEXT'");
-    ask("grep --help");
+    allow("grep --help");
     // Real rg treats -h as help, but the table parses it grep-style as
     // no-filename; bare `rg -h` stays fail-closed on the missing pattern.
     ask("rg -h");

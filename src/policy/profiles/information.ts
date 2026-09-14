@@ -1,17 +1,17 @@
 import type { CommandProfile } from "../types";
 
 const INFORMATION_FORMS: Record<string, RegExp> = {
-  date: /^(?: -(?:u|R)| -I\w*)*(?: \+[^\s]+)?$/,
-  uname: /^(?: -(?:[asnrvmpio]+))*$/,
-  uptime: /^$/,
+  date: /^(?: -(?:u|R)| --(?:utc|universal)| -I\w*| --iso-8601(?:=\w+)?)*(?: \+[^\s]+)?$/,
+  uname: /^(?: -(?:[asnrvmpio]+)| --(?:all|kernel-name|nodename|kernel-release|kernel-version|machine|processor|hardware-platform|operating-system))*$/,
+  uptime: /^(?: -[ps]| --(?:pretty|since))?$/,
   whoami: /^$/,
-  id: /^(?: -(?:[ugGnr]+))*$/,
+  id: /^(?: -(?:[ugGnr]+)| --(?:user|group|groups|name))*$/,
   free: /^(?: -(?:[bkmghwtsc]+))*$/,
   vm_stat: /^$/,
   nproc: /^(?: --all| --ignore \d+)?$/,
   lscpu: /^(?: -[abcepJ])*$/,
-  ps: /^(?: (?:aux|[aux]|-[aefx]))*$/,
-  pwd: /^(?: -[LP])?$/,
+  ps: /^(?: (?:auxw*|[aux]|-[aefx]))*$/,
+  pwd: /^(?: -[LP]| --(?:logical|physical))?$/,
   which: /^(?: -a)?(?: [^-\s][^\s]*)*$/,
   true: /^$/,
   false: /^$/,

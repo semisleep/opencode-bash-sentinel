@@ -164,6 +164,117 @@ describe("git profile", () => {
     ask("git stash show -x");
   });
 
+  it("allows patch display and revision filters on history subcommands", () => {
+    allow("git log -p -3");
+    allow("git show -p HEAD");
+    allow("git diff -p");
+    allow("git log -u --oneline");
+    allow("git log --patch --stat -3");
+    allow("git log --abbrev-commit --oneline");
+    allow("git log --reverse --oneline");
+    allow("git log --follow --oneline -- src/a.ts");
+    allow("git log --first-parent --oneline");
+    allow("git log --author=dev --oneline");
+    allow("git log --grep=cache --oneline");
+    allow("git show --grep=cache HEAD");
+    ask("git diff --author=x");
+    ask("git log --author");
+    ask("git log --author x --oneline");
+    ask("git log -x");
+  });
+
+  it("allows the --no-pager global display flag", () => {
+    allow("git --no-pager log --oneline");
+    allow("git --no-pager -C /tmp/repo log --oneline");
+    allow("git -C /tmp/repo --no-pager show --stat HEAD");
+    ask("git --no-pager push");
+    ask("git -C /tmp/repo -C /tmp log --oneline");
+  });
+
+  it("allows read-only git describe", () => {
+    allow("git describe");
+    allow("git describe --tags");
+    allow("git describe --always HEAD");
+    allow("git describe --abbrev=8 main");
+    allow("git describe --match 'v*' main");
+    ask("git describe --abbrev=x main");
+    ask("git describe --abbrev main");
+    ask("git describe --unknown");
+  });
+
+  it("allows listing-only git tag forms", () => {
+    allow("git tag");
+    allow("git tag -l");
+    allow("git tag --list");
+    allow("git tag --list 'v*'");
+    allow("git tag -n");
+    allow("git tag --sort=refname");
+    allow("git -C /tmp/repo tag");
+    ask("git tag v1.0");
+    ask("git tag -d v1.0");
+    ask("git tag -a v1.0 -m message");
+    ask("git tag -f v1.0");
+    ask("git tag -s v1.0");
+    ask("git tag --contains HEAD");
+  });
+
+  it("allows listing-only git remote forms", () => {
+    allow("git remote");
+    allow("git remote -v");
+    allow("git remote --verbose");
+    ask("git remote add upstream https://example.com/x.git");
+    ask("git remote remove origin");
+    ask("git remote set-url origin git@host:x.git");
+    ask("git remote show origin");
+  });
+
+  it("allows read-only git reflog inspection", () => {
+    allow("git reflog");
+    allow("git reflog show");
+    allow("git reflog show main");
+    ask("git reflog expire --all");
+    ask("git reflog delete HEAD@{1}");
+    ask("git reflog --unknown");
+    ask("git reflog main");
+  });
+
+  it("allows read-only shortlog, count-objects, and cat-file", () => {
+    allow("git shortlog");
+    allow("git shortlog -sn main");
+    allow("git shortlog --email");
+    ask("git shortlog --unknown");
+    allow("git count-objects -v");
+    allow("git count-objects --verbose");
+    ask("git count-objects -x");
+    allow("git cat-file -p HEAD");
+    allow("git cat-file -t HEAD");
+    allow("git cat-file -s HEAD");
+    ask("git cat-file --batch");
+    ask("git cat-file");
+    ask("git cat-file -p");
+  });
+
+  it("allows read-only git config queries", () => {
+    allow("git config --get user.name");
+    allow("git config --get-all user.email");
+    allow("git config --get-regexp '^alias\\.'");
+    allow("git config --list");
+    allow("git config user.name");
+    allow("git config --global --get user.email");
+    allow("git config -l --show-origin");
+    ask("git config user.name newvalue");
+    ask("git config --global user.name newvalue");
+    ask("git config --unset user.name");
+    ask("git config --add user.name x");
+    ask("git config --file /tmp/cfg --get user.name");
+    ask("git config --edit");
+  });
+
+  it("allows the --version form", () => {
+    allow("git --version");
+    ask("git --version extra");
+  });
+
   it("allows composed branch, log, and merge-base inspection lines", () => {
     allow(
       "git branch -a && git log --oneline -5 main && git log --oneline -5 hide_prefilled",

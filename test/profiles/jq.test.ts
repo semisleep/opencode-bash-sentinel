@@ -4,6 +4,8 @@ import { allow, ask, decision } from "../policy/helpers";
 describe("jq profile", () => {
   it("allows pure query forms with positively identified reads", () => {
     allow("jq --version");
+    allow("jq -h");
+    allow("jq --help");
     allow("jq . package.json");
     allow("jq -r '.name' package.json");
     allow("jq -c '.dependencies // {}' package.json");

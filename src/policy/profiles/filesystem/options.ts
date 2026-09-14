@@ -10,6 +10,13 @@ export type OptionGrammar = {
   short?: string;
   shortWithValue?: string;
   long?: ReadonlySet<string>;
+  /**
+   * Attached long values (`--flag=VALUE`) accepted only for whitelisted
+   * flags whose value is display-only data. The bare separate-value form
+   * (`--flag VALUE`) stays unsupported so a path operand can never be
+   * silently consumed as an option value.
+   */
+  longWithValue?: ReadonlyMap<string, RegExp>;
   /** Accept a bare count like `-8` where the tool means `-n 8`. */
   numeric?: boolean;
 };
@@ -62,6 +69,12 @@ export function parseArguments(
     if (options && argument.startsWith("--")) {
       const equals = argument.indexOf("=");
       const name = equals < 0 ? argument : argument.slice(0, equals);
+      const valuePattern = grammar.longWithValue?.get(name);
+      if (valuePattern) {
+        if (equals < 0 || !valuePattern.test(argument.slice(equals + 1)))
+          return;
+        continue;
+      }
       if (grammar.long?.has(name)) {
         if (equals >= 0) return;
         continue;

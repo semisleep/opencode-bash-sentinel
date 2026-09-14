@@ -18,6 +18,7 @@ const TESTS = new Set([
   "-print",
   "-print0",
   "-prune",
+  "-quit",
   "-true",
   "-xdev",
 ]);
@@ -81,13 +82,24 @@ export function recognizeFind(
   const references: string[] = [];
   while (index < values.length) {
     const token = values[index]!;
+    // --help/--version print and exit before any traversal happens.
+    if (token === "--help" || token === "--version")
+      return {
+        kind: "command",
+        text: node.text,
+        situation: "workspace-neutral-or-indeterminate",
+        allowed: true,
+        reason: "find usage form",
+      };
     if (TESTS.has(token) || OPERATORS.has(token)) {
       index++;
       continue;
     }
-    if (token === "-newer") {
+    // -newer and -samefile take a reference file that find reads for
+    // metadata, so the operand is a classification target, not data.
+    if (token === "-newer" || token === "-samefile") {
       const file = values[++index];
-      if (!file) return unsupported(node, "missing find -newer reference");
+      if (!file) return unsupported(node, "missing find reference");
       references.push(file);
       index++;
       continue;

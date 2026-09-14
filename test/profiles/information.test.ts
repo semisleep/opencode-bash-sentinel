@@ -21,7 +21,19 @@ describe("information profiles", () => {
       "nproc --ignore 1",
       "lscpu -a -J",
       "ps aux",
+      "ps auxww",
       "pwd -P",
+      "pwd --physical",
+      "date --utc +%F",
+      "date --universal",
+      "date --iso-8601",
+      "date --iso-8601=minutes",
+      "uname --all",
+      "uname --kernel-release",
+      "id --user",
+      "id --groups",
+      "uptime -p",
+      "uptime --pretty",
       "which",
       "which opencode",
       "which -a python3",
@@ -33,7 +45,8 @@ describe("information profiles", () => {
   });
 
   it("rejects options or operands outside each finite form", () => {
-    ask("uname --kernel-name");
+    ask("uname --unknown-flag");
+    ask("uname --kernel-name extra");
     ask("date tomorrow");
     ask("date -s 2026-01-01");
     ask("date --set=2026-01-01");
@@ -45,12 +58,13 @@ describe("information profiles", () => {
     ask("date +%s -u");
     ask("date '+%Y %m'");
     ask("uptime extra");
+    ask("uptime -x");
     ask("whoami extra");
     ask("vm_stat extra");
     ask("nproc --ignore");
     ask("nproc --ignore nope");
     ask("lscpu --json");
-    ask("pwd --logical");
+    ask("pwd --physicals");
     ask("which --all");
     ask("which -s python");
     ask("true extra");
