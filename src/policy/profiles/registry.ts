@@ -15,6 +15,7 @@ import { recognizeMakeWorkflow } from "./make";
 import { NODE_WORKFLOW_NAMES, recognizeNodeWorkflow } from "./node";
 import { recognizeNpx } from "./npx";
 import { recognizePip } from "./pip";
+import { recognizePlutil } from "./plutil";
 import { recognizeEcho, recognizePrintf } from "./printf";
 import { recognizeSed } from "./sed";
 import { recognizeSearch, SEARCH_NAMES } from "./search";
@@ -78,6 +79,7 @@ export function recognizeCommand(
   if (name === "sed") return recognizeSed(node, invocation);
   if (name === "jq") return recognizeJq(node, invocation);
   if (name === "uniq") return recognizeUniq(node, invocation);
+  if (name === "plutil") return recognizePlutil(node, invocation);
   if (name === "find") return recognizeFind(node, invocation);
   if (name === "dd") return recognizeDd(node, invocation);
   if (SEARCH_NAMES.has(name)) return recognizeSearch(node, invocation, name);
