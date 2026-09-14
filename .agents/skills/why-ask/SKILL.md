@@ -1,6 +1,6 @@
 ---
 name: why-ask
-description: Explains why bash commands received an "ask" verdict from opencode-bash-sentinel instead of auto-approve, and evaluates what supporting them would cost. Use when the user asks why commands keep prompting, wants recent asks reviewed from the audit history (no pasting needed), pastes commands that look harmless but still prompt, or asks what it takes to auto-allow a new command or flag. Defaults to the 10 most recent distinct ask commands (user-overridable count) and caches conclusions so repeated runs skip already-analyzed commands.
+description: Explains why bash commands received an "ask" verdict from opencode-bash-sentinel instead of auto-approve, and evaluates what supporting them would cost. Pure analysis — implementation is handed off to the fix-profiles (cost=profile) and evaluate-adr (cost=ADR) skills. Use when the user asks why commands keep prompting, wants recent asks reviewed from the audit history (no pasting needed), pastes commands that look harmless but still prompt, or asks what it takes to auto-allow a new command or flag. Defaults to the 10 most recent distinct ask commands NOT already in the conclusions cache (cached entries are skipped unless the user explicitly asks to re-analyze).
 ---
 
 # Explain and evaluate "ask" verdicts
@@ -9,18 +9,20 @@ Two intake modes:
 
 - **History mode (default)**: collect the ask commands yourself from the
   runtime audit log — the user does not need to paste anything. Default
-  scope: the 10 most recent *distinct* ask commands, and analyze ALL of
-  them. Never ask the user which entries to check — no question dialog, no
-  selection step; any ambiguity about scope resolves silently to the
-  default batch, and you just state the chosen scope in the output. Only if
-  the user's request names a count ("最近 20 条", "last 5", "再往前 50 条")
-  does the count change.
+  scope: the 10 most recent *distinct, not-yet-cached* ask commands, and
+  analyze ALL of them. Never ask the user which entries to check — no
+  question dialog, no selection step; any ambiguity about scope resolves
+  silently to the default batch, and you just state the chosen scope in
+  the output. Only if the user's request names a count ("最近 20 条",
+  "last 5", "再往前 50 条") does the count change.
 - **Paste mode (fallback)**: the user pasted specific commands, or audit is
   off and there is no history to read.
 
-Your job is a forensic answer, not a fix: find the exact rule that produced
-each ask, judge whether the command is genuinely harmless, and if so assess
-the cost of supporting it — including whether that cost is architectural.
+Your job is a forensic answer, nothing else: find the exact rule that
+produced each ask, judge whether the command is genuinely harmless, and if
+so classify what supporting it would cost — profile-level work or an
+architecture decision. Do not implement anything; hand off to
+`fix-profiles` / `evaluate-adr` at the end.
 
 ## Step 0 — Collect candidates and check the cache
 
@@ -37,11 +39,10 @@ the cost of supporting it — including whether that cost is architectural.
    If that prompts, fall back to `wc -l` on the file plus the Read tool
    with an offset near the end. Do not write ad-hoc jq/python parsers for
    this — parse the JSONL lines yourself.
-3. From those lines, build the batch: drop `gate:"transport"` lines;
-   dedup by exact command string (the most recent occurrence wins, its
-   `reason` is the ground truth); order most-recent-first; take the first
-   N (default 10). Near-duplicates that differ only in arguments are
-   separate entries.
+3. From those lines, build the candidate list: drop `gate:"transport"`
+   lines; dedup by exact command string (the most recent occurrence wins,
+   its `reason` is the ground truth); order most-recent-first. Near-
+   duplicates that differ only in arguments are separate entries.
 4. Version check: each audit line's `build` field names the code that
    produced it (`git rev-parse --short HEAD` captured when the opencode
    process loaded the plugin, `+dirty` when engine sources were
@@ -55,16 +56,27 @@ the cost of supporting it — including whether that cost is architectural.
 5. Sanity check: if a `(transport probe)` degraded line sits near those
    timestamps, the asks may be transport failure (all-prompts mode), not
    analyzer verdicts — say so and stop.
-6. Cache: read `.agents/skills/why-ask/cache.json` (repo-relative,
-    gitignored per-checkout local state — never commit it) if it exists
-    (schema below). For each candidate:
-    - cached entry with the same command AND same `reason` → serve from
-      cache, skip analysis;
-    - cached entry whose `reason` differs from the audit line → the
-      analyzer changed, re-analyze and overwrite;
-    - the user explicitly asked to re-analyze ("重新分析", "re-analyze",
-      "ignore cache") → bypass the cache for the whole batch.
-7. If the log is missing or has no escalate lines: report that audit
+6. Cache filtering — read `.agents/skills/why-ask/cache.json` (repo-
+   relative, gitignored per-checkout local state — never commit it) if it
+   exists (schema below), then apply it to the candidate list:
+   - a candidate whose exact command AND `reason` both match a cache
+     entry has already been analyzed → **skip it by default**; it does
+     not occupy a slot in the batch and is not re-analyzed;
+   - a candidate whose command matches a cache entry but whose `reason`
+     differs is NOT considered cached — the analyzer changed, re-analyze
+     and overwrite the entry;
+   - the user explicitly asked to re-analyze ("重新分析", "re-analyze",
+     "ignore cache", "再查一遍") → ignore the cache filter for the whole
+     batch and analyze everything;
+   - entries whose cache summary already says FIXED are still skipped —
+     being fixed is the strongest form of "already handled"; report them
+     only as a count.
+7. Take the first N (default 10) candidates *remaining after* the cache
+   filter. If fewer than N remain, analyze what is there and say so. If
+   nothing remains, report that every recent ask is already analyzed
+   (and how many were skipped) — offer re-analysis only if the user
+   asks for it, do not run it on your own.
+8. If the log is missing or has no escalate lines: report that audit
    appears off and fall back to paste mode.
 
 ## Step 1 — Reproduce with the real analyzer, never by guessing
@@ -178,33 +190,24 @@ forms to an allow surface that already exists for that tool, it is profile
 work. If the fix asks the engine to be smarter about ambiguity, trust
 unrecognized shapes, or redefine what a situation means, it is architecture.
 
-### 4b. Concretely: what changes, what impact
+### 4b. Class-level observations, not implementation plans
 
-For profile-level work, list the exact edits and their blast radius:
+Mapping exact files and edits is the `fix-profiles` skill's job. What this
+skill records is the analysis a fixer needs:
 
-| Change | Files |
-| --- | --- |
-| New command profile | `src/policy/profiles/<name>.ts`, `registry.ts`, new `test/profiles/<name>.test.ts`, README command coverage |
-| Wider options on existing profile | the profile file (e.g. `search.ts`, `readers.ts`, `options.ts`), its test file |
-| Both may also touch | `test/plugin.test.ts` contract block if the runtime verdict changes |
-
-Impact questions to answer explicitly, because every widening is a security
-decision in disguise:
-
+- The verdict line: `profile-level, no invariant touched` or
+  `architecture — ADR required because <which invariant/section>`.
 - Dangerous cousins: does the same syntax family carry a harmful variant
-  that must be excluded (the `find` operators, `sort -o`, `--upload-pack`)
-  and can the exclusion be expressed in the table, or does it need logic?
-- Shared-table blast radius: if the option table is shared (grep/rg class),
-  does widening it for one tool leak onto its siblings? (The grep/rg split
-  exists precisely because of this.)
+  that any fix must exclude (the `find` operators, `sort -o`,
+  `--upload-pack`, `rg --pre`)?
+- Class-level observations: is this an isolated gap or one instance of a
+  wider class (e.g. "all long forms missing for this tool", "no `=`-
+  attached value support in the shared option parser", "the sibling
+  tool sharing this table has the same hole")? Say so explicitly — the
+  fixer is required to fix the class, not the symptom.
 - Interaction with aggregation: can the newly allowed form appear as one
   leg of a composed line where the OTHER leg is what escalates? (Fine —
   aggregation stays worst-case — but say so.)
-- Test surface: which contract tests pin the current behavior and must be
-  extended, not just new ones added.
-
-End with a one-line verdict: `profile-level, ~N files, no invariant touched`
-or `architecture — ADR required because <which invariant/section>`.
 
 ## Step 5 — Write back the cache
 
@@ -237,17 +240,25 @@ capped at 200):
 
 ## Output
 
+- State the chosen scope: how many candidates were skipped as already
+  cached, and what the analyzed batch is.
 - New commands: full per-command treatment (Steps 1–4).
-- Cached commands: one line each, marked `(cached)`, e.g.
-  `rg -r ... — dynamic rg, correct-ask (cached)`.
 - Finish with a summary table: command / correct-ask vs should-allow /
-  cost (none | profile | ADR) / new | cached.
+  cost (none | profile | ADR) / triggering rule.
+- End with a handoff — no implementation, just the pointer:
+  - entries with `cost=profile` → the `fix-profiles` skill;
+  - entries with `cost=ADR` → the `evaluate-adr` skill.
 
 ## Rules
 
 - Analysis only. Do not edit `src/`, `test/`, or docs while running this
-  skill — implementing needs the maintainer's go-ahead (AGENTS.md), and
-  architecture-level ideas need an ADR proposal, not code.
+  skill — fixes belong to `fix-profiles`, architecture questions to
+  `evaluate-adr`.
+- Cached (command, reason) pairs are skipped, not re-served and not
+  re-analyzed; only an explicit user request re-opens them.
+- A cache entry whose `reason` no longer matches the audit line is stale,
+  not cached — re-analyze and overwrite it; never skip (or serve) on a
+  stale reason.
 - Probe with the resident probe first (`.agents/skills/why-ask/probe.ts` +
   `probes.txt`); throwaway scripts go in the system temp dir, are used only
   for counterfactual contexts, and are deleted afterwards.
@@ -255,8 +266,6 @@ capped at 200):
   context (baseline, cwd, audit line) wins — report both and explain the
   difference — unless the audit `build` field identifies stale code (see
   Step 0), in which case the current-analyzer reproduction governs.
-- Never serve a cached conclusion whose `reason` no longer matches the
-  audit line.
 - Never pop a question dialog asking which log entries to analyze —
-  default to the 10 most recent distinct ask commands and check every one;
-  only the user's explicit count request overrides that number.
+  default to the 10 most recent distinct uncached ask commands and check
+  every one; only the user's explicit count request overrides that number.
