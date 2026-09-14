@@ -20,7 +20,7 @@ const GRAMMARS: Record<string, OptionGrammar> = {
     ]),
   },
   ls: {
-    short: "1AaBCFghHiklLmnpqQrRsStUvwX",
+    short: "1AaBCdFghHiklLmnpqQrRsStUvwX",
     long: new Set([
       "--all",
       "--almost-all",

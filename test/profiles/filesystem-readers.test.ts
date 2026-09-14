@@ -73,4 +73,15 @@ describe("filesystem reader profiles", () => {
     ask("sort --compress-program=gzip file");
     ask("sort -Z file");
   });
+
+  it("allows directory-display forms of ls", () => {
+    allow("ls -d src");
+    allow("ls -ld src");
+    allow("ls -d .reference/opencode/packages");
+    allow("ls --directory src");
+    allow("ls src/* -d");
+    allow("ls -d src/*");
+    ask("ls -z src");
+    ask("ls -D src");
+  });
 });

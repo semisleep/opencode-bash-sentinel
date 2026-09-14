@@ -13,6 +13,7 @@ const READ_SUBCOMMANDS = new Set([
   "branch",
   "merge-base",
   "check-ignore",
+  "stash",
 ]);
 
 const ALL_SUBCOMMANDS = new Set([
@@ -167,6 +168,7 @@ function validArguments(subcommand: string, args: string[]) {
   if (subcommand === "fetch") return fetchArguments(args);
   if (subcommand === "branch") return branchArguments(args);
   if (subcommand === "merge-base") return mergeBaseArguments(args);
+  if (subcommand === "stash") return stashArguments(args);
   if (subcommand === "log" || subcommand === "show" || subcommand === "diff")
     return historyArguments(subcommand, args);
   const allowed = FLAGS[subcommand];
@@ -271,6 +273,16 @@ function branchArguments(args: string[]) {
     if (!listing) return false;
   }
   return true;
+}
+
+// Only inspection forms allow: `list` forwards to git log, `show` to git
+// diff. Bare `git stash` and every mutating action (push, pop, apply,
+// drop, clear, store, create, branch, save) stay unsupported.
+function stashArguments(args: string[]) {
+  const action = args[0];
+  if (action === "list") return historyArguments("log", args.slice(1));
+  if (action === "show") return historyArguments("show", args.slice(1));
+  return false;
 }
 
 function mergeBaseArguments(args: string[]) {

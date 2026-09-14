@@ -140,6 +140,30 @@ describe("git profile", () => {
     ask("git merge-base --exec cmd main");
   });
 
+  it("allows read-only git stash inspection", () => {
+    allow("git stash list");
+    allow("git stash list | head -3");
+    allow("git stash list --oneline");
+    allow("git stash list -3");
+    allow("git stash show");
+    allow("git stash show --stat");
+    allow("git stash show --name-only");
+    allow("git -C /tmp/repo stash list");
+    ask("git stash");
+    ask("git stash -u");
+    ask("git stash push");
+    ask("git stash pop");
+    ask("git stash apply");
+    ask("git stash drop");
+    ask("git stash clear");
+    ask("git stash store -m message refs/stash");
+    ask("git stash create");
+    ask("git stash branch topic");
+    ask("git stash save work-in-progress");
+    ask("git stash list --exec cmd");
+    ask("git stash show -x");
+  });
+
   it("allows composed branch, log, and merge-base inspection lines", () => {
     allow(
       "git branch -a && git log --oneline -5 main && git log --oneline -5 hide_prefilled",
