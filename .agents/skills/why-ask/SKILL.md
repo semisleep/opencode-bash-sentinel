@@ -1,6 +1,6 @@
 ---
 name: why-ask
-description: Explains why bash commands received an "ask" verdict from opencode-bash-sentinel instead of auto-approve, and evaluates what supporting them would cost. Pure analysis — implementation is handed off to the fix-profiles (cost=profile) and evaluate-adr (cost=ADR) skills. Use when the user asks why commands keep prompting, wants recent asks reviewed from the audit history (no pasting needed), pastes commands that look harmless but still prompt, or asks what it takes to auto-allow a new command or flag. Defaults to the 10 most recent distinct ask commands NOT already in the conclusions cache (cached entries are skipped unless the user explicitly asks to re-analyze).
+description: Explains why bash commands received an "ask" verdict from opencode-bash-sentinel instead of auto-approve, and evaluates what supporting them would cost. Pure analysis — implementation is handed off to the fix-profiles (cost=profile) and evaluate-adr (cost=ADR) skills. Use when the user asks why commands keep prompting, wants recent asks reviewed from the audit history (no pasting needed), pastes commands that look harmless but still prompt, or asks what it takes to auto-allow a new command or flag. Defaults to the N=10 most recent distinct ask commands; cache-hit entries inside that N-record window are skipped, and the remainder is analyzed (unless the user explicitly asks to re-analyze).
 ---
 
 # Explain and evaluate "ask" verdicts
@@ -9,12 +9,15 @@ Two intake modes:
 
 - **History mode (default)**: collect the ask commands yourself from the
   runtime audit log — the user does not need to paste anything. Default
-  scope: the 10 most recent *distinct, not-yet-cached* ask commands, and
-  analyze ALL of them. Never ask the user which entries to check — no
+  scope: take the N most recent *distinct* ask commands, where N defaults
+  to 10; from those N records, drop the ones already covered by the
+  conclusions cache, and analyze ALL of the remainder (N minus cached —
+  the window is NOT topped up with older records to compensate for cache
+  hits). Never ask the user which entries to check — no
   question dialog, no selection step; any ambiguity about scope resolves
   silently to the default batch, and you just state the chosen scope in
   the output. Only if the user's request names a count ("最近 20 条",
-  "last 5", "再往前 50 条") does the count change.
+  "last 5", "再往前 50 条") does N change.
 - **Paste mode (fallback)**: the user pasted specific commands, or audit is
   off and there is no history to read.
 
@@ -60,8 +63,10 @@ architecture decision. Do not implement anything; hand off to
    relative, gitignored per-checkout local state — never commit it) if it
    exists (schema below), then apply it to the candidate list:
    - a candidate whose exact command AND `reason` both match a cache
-     entry has already been analyzed → **skip it by default**; it does
-     not occupy a slot in the batch and is not re-analyzed;
+     entry has already been analyzed → **skip it by default** — it still
+     occupies one of the N collected records (it is not replaced by an
+     older record), is not re-analyzed, and is reported only as a
+     skipped count;
    - a candidate whose command matches a cache entry but whose `reason`
      differs is NOT considered cached — the analyzer changed, re-analyze
      and overwrite the entry;
@@ -71,11 +76,14 @@ architecture decision. Do not implement anything; hand off to
    - entries whose cache summary already says FIXED are still skipped —
      being fixed is the strongest form of "already handled"; report them
      only as a count.
-7. Take the first N (default 10) candidates *remaining after* the cache
-   filter. If fewer than N remain, analyze what is there and say so. If
-   nothing remains, report that every recent ask is already analyzed
-   (and how many were skipped) — offer re-analysis only if the user
-   asks for it, do not run it on your own.
+7. Fix the analysis window BEFORE filtering: take the first N (default 10)
+   candidates from the most-recent-first list. Then remove the cached ones
+   (rule 6) — the analysis batch is exactly the remainder, N minus the
+   skipped count; do NOT walk further back in the log to top the batch
+   back up to N. If some remain, analyze all of them and say how many of
+   the N were skipped as cached. If nothing remains, report that all N
+   recent asks are already analyzed (N skipped) — offer re-analysis only
+   if the user asks for it, do not run it on your own.
 8. If the log is missing or has no escalate lines: report that audit
    appears off and fall back to paste mode.
 
@@ -240,8 +248,9 @@ capped at 200):
 
 ## Output
 
-- State the chosen scope: how many candidates were skipped as already
-  cached, and what the analyzed batch is.
+- State the chosen scope: the value of N, how many of the N records were
+  skipped as already cached, and what the analyzed batch (N minus
+  skipped) is.
 - New commands: full per-command treatment (Steps 1–4).
 - Finish with a summary table: command / correct-ask vs should-allow /
   cost (none | profile | ADR) / triggering rule.
@@ -267,5 +276,6 @@ capped at 200):
   difference — unless the audit `build` field identifies stale code (see
   Step 0), in which case the current-analyzer reproduction governs.
 - Never pop a question dialog asking which log entries to analyze —
-  default to the 10 most recent distinct uncached ask commands and check
-  every one; only the user's explicit count request overrides that number.
+  default to the N=10 most recent distinct ask commands, skip the cache
+  hits inside that N-record window, and check every remaining one; only
+  the user's explicit count request overrides N.
