@@ -53,14 +53,43 @@ describe("filesystem reader profiles", () => {
     allow("ls src/*.ts");
     allow("cat CHANGELOG*");
     allow("wc -l package*.json");
+    // Dot-prefixed components are bounded whenever the literal prefix
+    // before the first wildcard is not `.`/`..` themselves: `.env*` can
+    // never expand to `.`/`..` (bash-verified), so it covers cwd reads
+    // exactly like the literal `cat .env` that already allows.
+    allow("cat .env*");
+    allow("ls .env*");
+    allow("wc -l .env*");
+    allow("file .env*");
+    allow("cat config/.env*");
+    allow("cat .env.*");
+    // Prefix `...` is three dots: expansions start with `...` and can
+    // never complete to `.`/`..`.
+    allow("cat ...*");
     ask("ls *.ts");
     ask("cat *.md");
     ask("ls .*");
     ask("ls src/.*");
+    // `.*`, `..*`, `.?*` expand to `.`/`..` in bash and climb the bound.
+    ask("cat .*");
+    ask("cat ..*");
+    ask("cat .?*");
+    ask("cat .*/x");
+    ask("cat .env*/../x");
+    ask("cat .env*/..");
     // Value-taking grammars keep literal-only arguments, because a cover
     // eaten as an option value would under-report reads.
     ask("head -n 5 *.ts");
     ask("sort *.ts");
+  });
+
+  it("keeps dotfile glob reads on the read-only side of every red line", () => {
+    allow("cat .env");
+    allow("cat .env* && rg -n pattern src");
+    ask("cat .env* && rm -rf .git");
+    ask("cat .env*; git push");
+    ask("cat .env* /etc/shadow");
+    ask("cat .env* > /etc/passwd");
   });
 
   it("keeps sort read-only", () => {

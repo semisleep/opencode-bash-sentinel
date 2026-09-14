@@ -142,6 +142,11 @@ describe("search profiles", () => {
     allow("rg pattern ~/*.ts");
     allow("rg -n pattern a*.ts");
     allow("rg -n pattern opencode.json* doc/*.md");
+    // Dot-prefixed components are bounded when the literal prefix before
+    // the first wildcard is not `.`/`..` themselves: `.env*` can never
+    // expand to `.`/`..` (bash-verified), matching the literal allow.
+    allow("rg -n pattern .env*");
+    allow("rg -n pattern config/.env*");
     expect(decision("rg pattern /etc/*.conf").units[0]?.situation).toBe(
       "workspace-outside",
     );
@@ -166,13 +171,15 @@ describe("search profiles", () => {
     ask("rg -n pattern src/$dir/*.ts");
     ask("rg -n pattern {src,test}/*.ts");
     ask("rg -n pattern @(src|test)/*.ts");
-    // A dot-prefixed wildcard component can expand to `.` or `..` and so
-    // climb out of the prefix bound, and a `..` behind the first wildcard
+    // A dot-prefixed wildcard component climbs the bound only when its
+    // literal prefix before the first wildcard is `.`/`..` themselves
+    // (those expand to `.`/`..` in bash); a `..` behind the first wildcard
     // can bypass the sensitive red line; prefix-literal `..` stays fine
     // (pinned as an allow above).
     ask("rg -n pattern .*");
     ask("rg -n pattern ..*");
     ask("rg -n pattern src/.*");
+    ask("rg -n pattern .env*/..");
     ask("rg -n pattern src/*/../x/*.ts");
     ask("rg -n pattern src/*/..");
     ask(

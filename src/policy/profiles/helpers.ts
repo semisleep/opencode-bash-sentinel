@@ -4,12 +4,17 @@ import { looksLikePath, resolvePath, withinWorkspace } from "../paths";
 import type { Effect, UnitSeed, WorkspaceContext } from "../types";
 
 // A shell pathname glob is acceptable as a read operand only when a literal
-// prefix bounds every expansion. Bash wildcards never match a leading dot,
-// so a component like `foo*` expands to names starting with `foo` — never
-// `.`/`..` (which could climb the bound) and never a leading-dash filename
-// the tool would reparse as an option — while a dot-prefixed wildcard such
-// as `.*` can. Expansion, brace, and extglob material is refused, as is any
-// literal `..` component behind the first wildcard: shell-side
+// prefix bounds every expansion. Bash wildcards never match a filename's
+// leading dot, so a component like `foo*` expands to names starting with
+// `foo` — never `.`/`..` (which could climb the bound) — while a
+// dot-prefixed wildcard can: `.*`, `..*`, and `.?*` expand to `.`/`..`
+// themselves (`src/.*` reaches `src/..`). A dot-prefixed component is
+// therefore bounded only when its literal prefix before the first wildcard
+// names something other than `.`/`..`: `.env*`, `.env.*`, and `...*` can
+// never complete to them (verified against bash). Bracket classes cannot
+// match a leading dot in bash, so `[.]*`-style components stay bounded.
+// Expansion, brace, and extglob material is refused, as is any literal
+// `..` component behind the first wildcard: shell-side
 // normalization could climb it out of the prefix bound. The read
 // conservatively covers the literal directory prefix, or the cwd for a
 // bare filename glob; both classify like any other read operand.
@@ -18,10 +23,7 @@ export function globReadTarget(raw: string): string | undefined {
   if (/[$`{}()\\'"\s;&|<>!^]/.test(raw)) return;
   const wildcard = raw.search(/[*?\[]/);
   if (wildcard < 0) return;
-  if (
-    raw.split("/").some((part) => /[*?\[]/.test(part) && part.startsWith("."))
-  )
-    return;
+  if (raw.split("/").some(unboundedComponent)) return;
   const slash = raw.lastIndexOf("/", wildcard);
   if (slash < 0) {
     // With no directory component before the first wildcard, a nonempty
@@ -33,6 +35,20 @@ export function globReadTarget(raw: string): string | undefined {
   }
   if (raw.slice(slash + 1).split("/").includes("..")) return;
   return raw.slice(0, slash + 1);
+}
+
+// True for a path component whose wildcard expansion can include `.` or
+// `..`, escaping the literal-prefix bound. Only a dot-prefixed component
+// qualifies, and only when the literal prefix before its first wildcard is
+// exactly `.` or `..` — a longer or mixed prefix (`.env*`, `...*`) pins the
+// expansion to names that start with it, which `.`/`..` never do.
+function unboundedComponent(part: string): boolean {
+  const wildcard = part.search(/[*?\[]/);
+  return (
+    wildcard >= 0 &&
+    part.startsWith(".") &&
+    /^\.{1,2}$/.test(part.slice(0, wildcard))
+  );
 }
 
 export function unsupported(node: SyntaxNode, reason: string): UnitSeed {
