@@ -20,7 +20,10 @@ const GRAMMARS: Record<string, OptionGrammar> = {
     ]),
   },
   ls: {
-    short: "1AaBCdFGghHiklLmnopqQrRsStUvwX",
+    // e/O/@ are the macOS/BSD display-only trio (ACLs, file flags,
+    // xattrs): valueless everywhere and absent from GNU ls. -T stays
+    // out because GNU ls makes it the value-taking --tab-size.
+    short: "1AaBCdeFGghHiklLmnoOpqQrRsStUvwX@",
     long: new Set([
       "--all",
       "--almost-all",

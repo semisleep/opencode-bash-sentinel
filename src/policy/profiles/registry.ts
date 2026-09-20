@@ -15,6 +15,7 @@ import { unsupported } from "./helpers";
 import { informationNames, recognizeInformation } from "./information";
 import { recognizeMakeWorkflow } from "./make";
 import { recognizeMdfind } from "./mdfind";
+import { recognizeNc } from "./nc";
 import { NODE_WORKFLOW_NAMES, recognizeNodeWorkflow } from "./node";
 import { recognizeNpx } from "./npx";
 import { recognizePip } from "./pip";
@@ -87,6 +88,7 @@ export function recognizeCommand(
   if (name === "plutil") return recognizePlutil(node, invocation);
   if (name === "mdfind") return recognizeMdfind(node, invocation);
   if (name === "pgrep") return recognizePgrep(node, invocation);
+  if (name === "nc") return recognizeNc(node, invocation);
   if (name === "defaults") return recognizeDefaults(node, invocation);
   if (name === "textutil") return recognizeTextutil(node, invocation);
   if (name === "brew") return recognizeBrew(node, invocation);

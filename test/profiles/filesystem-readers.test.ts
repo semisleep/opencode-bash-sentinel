@@ -144,6 +144,21 @@ describe("filesystem reader profiles", () => {
     ask("ls -D src");
   });
 
+  it("allows the macOS display-only ls flag trio (ACL, flags, xattrs)", () => {
+    allow("ls -le src");
+    allow("ls -lO src");
+    allow("ls -l@ src");
+    allow("ls -ldeO@ src");
+    allow("ls -e src");
+    allow("ls -lde /etc/hosts");
+    allow("ls -lde ~/Library/Application\\ Support");
+    // -T is the value-taking --tab-size in GNU ls; -W whiteouts stay
+    // out with it.
+    ask("ls -T 8 src");
+    ask("ls -W src");
+    ask("ls -lOe@ src && rm -rf .git");
+  });
+
   it("supports the --help usage form on readers", () => {
     allow("cat --help");
     allow("ls --help");
