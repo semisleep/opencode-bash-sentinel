@@ -1,9 +1,11 @@
 import type { SyntaxNode } from "../../parser/node";
 import type { Invocation, UnitSeed, WorkspaceContext } from "../types";
+import { recognizeBrew } from "./brew";
 import { recognizeCargoWorkflow } from "./cargo";
 import { recognizeCurl } from "./curl";
 import { recognizeDd } from "./dd";
 import { isRiskyEnvironmentName } from "./environment";
+import { recognizeDefaults } from "./defaults";
 import { recognizeFilesystem } from "./filesystem";
 import { recognizeFind } from "./find";
 import { recognizeGit } from "./git";
@@ -12,13 +14,16 @@ import { recognizeJq } from "./jq";
 import { unsupported } from "./helpers";
 import { informationNames, recognizeInformation } from "./information";
 import { recognizeMakeWorkflow } from "./make";
+import { recognizeMdfind } from "./mdfind";
 import { NODE_WORKFLOW_NAMES, recognizeNodeWorkflow } from "./node";
 import { recognizeNpx } from "./npx";
 import { recognizePip } from "./pip";
 import { recognizePlutil } from "./plutil";
+import { recognizePgrep } from "./pgrep";
 import { recognizeEcho, recognizePrintf } from "./printf";
 import { recognizeSed } from "./sed";
 import { recognizeSearch, SEARCH_NAMES } from "./search";
+import { recognizeTextutil } from "./textutil";
 import { recognizeUniq } from "./uniq";
 import {
   INTERPRETER_NAMES,
@@ -80,6 +85,11 @@ export function recognizeCommand(
   if (name === "jq") return recognizeJq(node, invocation);
   if (name === "uniq") return recognizeUniq(node, invocation);
   if (name === "plutil") return recognizePlutil(node, invocation);
+  if (name === "mdfind") return recognizeMdfind(node, invocation);
+  if (name === "pgrep") return recognizePgrep(node, invocation);
+  if (name === "defaults") return recognizeDefaults(node, invocation);
+  if (name === "textutil") return recognizeTextutil(node, invocation);
+  if (name === "brew") return recognizeBrew(node, invocation);
   if (name === "find") return recognizeFind(node, invocation);
   if (name === "dd") return recognizeDd(node, invocation);
   if (SEARCH_NAMES.has(name)) return recognizeSearch(node, invocation, name);

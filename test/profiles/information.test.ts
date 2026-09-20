@@ -40,6 +40,9 @@ describe("information profiles", () => {
       "true",
       "false",
       ":",
+      "sleep 2",
+      "sleep 0.5",
+      "sleep 2 && echo ok",
     ])
       allow(source);
   });
@@ -70,5 +73,9 @@ describe("information profiles", () => {
     ask("true extra");
     ask(": extra");
     ask("uname $FLAGS");
+    ask("sleep");
+    ask("sleep foo");
+    ask("sleep 2m");
+    ask("sleep 1 2");
   });
 });

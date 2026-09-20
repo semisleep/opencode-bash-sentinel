@@ -1,6 +1,11 @@
+import type { SyntaxNode } from "../../parser/node";
 import { withinWorkspace } from "../paths";
-import type { CommandProfile, WorkspaceContext } from "../types";
-import { dependencies, unsafeVisibleArgument } from "./helpers";
+import type { CommandProfile, UnitSeed, WorkspaceContext } from "../types";
+import {
+  dependencies,
+  unsupported,
+  unsafeVisibleArgument,
+} from "./helpers";
 
 export const NODE_WORKFLOW_NAMES = new Set(["npm", "pnpm", "yarn", "bun"]);
 
@@ -12,6 +17,14 @@ export const recognizeNodeWorkflow: CommandProfile = (
   name,
 ) => {
   const args = invocation.args.map((argument) => argument.literal);
+  if (args.every((argument) => argument !== undefined)) {
+    const listing = recognizeDependencyList(
+      node,
+      args as string[],
+      name,
+    );
+    if (listing) return listing;
+  }
   let shape =
     withinWorkspace(cwd, ctx.workspace) &&
     args.every((argument) => argument !== undefined) &&
@@ -29,6 +42,37 @@ export const recognizeNodeWorkflow: CommandProfile = (
     `${name} workflow`,
   );
 };
+
+// `npm ls` / `pnpm ls` / `yarn list` print the dependency tree without
+// running lifecycle scripts or touching files, so the form allows as pure
+// information regardless of the workflow baseline that gates npm
+// test/run. Flags are a closed display-only set (-g/--global, --json,
+// attached --depth=N); remaining operands are literal package names
+// (data, not paths). Every other flag or a dynamic operand falls back to
+// the fail-closed workflow path.
+function recognizeDependencyList(
+  node: SyntaxNode,
+  args: string[],
+  name: string,
+): UnitSeed | undefined {
+  const subcommand = args[0];
+  const heads = name === "yarn" ? ["list"] : ["ls", "list"];
+  if (!heads.includes(subcommand ?? "")) return undefined;
+  for (const value of args.slice(1)) {
+    if (value === "-g" || value === "--global" || value === "--json")
+      continue;
+    if (/^--depth=\d+$/.test(value)) continue;
+    if (value.startsWith("-"))
+      return unsupported(node, `unsupported ${name} list option`);
+  }
+  return {
+    kind: "command",
+    text: node.text,
+    situation: "workspace-neutral-or-indeterminate",
+    allowed: true,
+    reason: `${name} dependency listing`,
+  };
+}
 
 function validTail(
   args: string[],

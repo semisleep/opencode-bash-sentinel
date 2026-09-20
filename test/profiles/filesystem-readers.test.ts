@@ -77,10 +77,40 @@ describe("filesystem reader profiles", () => {
     ask("cat .*/x");
     ask("cat .env*/../x");
     ask("cat .env*/..");
+    // Backslash-escaped ordinary characters — `\ ` in `~/Library/
+    // Application Support`-style paths — are literal in bash and keep the
+    // literal-prefix bound, so the cover classifies like any other read.
+    allow("ls -d ~/Library/Application\\ Support/*Cursor*");
+    allow("cat ~/Library/Application\\ Support/*foo*.txt");
+    allow("file ~/Library/Application\\ Support/*foo*");
+    allow("cat my\\ dir/*.txt");
+    // Dynamic escapes and quoted globs stay fail-closed: `\$` and `\``
+    // flatten to text indistinguishable from genuinely dynamic material,
+    // and a quoted wildcard never expands at all.
+    ask("cat \\$HOME/*x*");
+    ask(String.raw`cat \`whoami\`*x*`);
+    ask('cat "my dir/*.txt"');
+    ask("cat my\\ dir/*/../x");
     // Value-taking grammars keep literal-only arguments, because a cover
     // eaten as an option value would under-report reads.
     ask("head -n 5 *.ts");
     ask("sort *.ts");
+  });
+
+  it("keeps od a pure byte dump", () => {
+    allow("od -c file");
+    allow("od -An -c file");
+    allow("od -A x -j 5 file");
+    allow("od -tx1 file.bin");
+    allow("od -N 12 -c file");
+    allow("od -c");
+    allow("cat x | od -c");
+    allow("od --help");
+    ask("od -w8 -c file");
+    ask("od -S 4 file");
+    ask("od -c file && rm -rf .git");
+    ask("od -c ~/.ssh/id_rsa");
+    ask("od $FILE");
   });
 
   it("keeps dotfile glob reads on the read-only side of every red line", () => {

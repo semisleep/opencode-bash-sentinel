@@ -18,9 +18,21 @@ import type { Effect, UnitSeed, WorkspaceContext } from "../types";
 // normalization could climb it out of the prefix bound. The read
 // conservatively covers the literal directory prefix, or the cwd for a
 // bare filename glob; both classify like any other read operand.
-export function globReadTarget(raw: string): string | undefined {
+// Backslash-escaped ordinary characters — notably `\ ` in paths like
+// `~/Library/Application Support/` — are literal in bash and keep the
+// bound intact, so exactly those are unescaped before screening. Every
+// other backslash escape (`\$`, `` \` ``, `\"`, `\\`, …) flattens to text
+// indistinguishable from genuinely dynamic material and stays refused,
+// as do quoted regions (their quotes remain in `raw`, and a quoted glob
+// is not a glob at all — the shell passes the wildcard through literally).
+export function globReadTarget(argument: string): string | undefined {
+  let raw = argument;
   if (raw.startsWith("-")) return;
-  if (/[$`{}()\\'"\s;&|<>!^]/.test(raw)) return;
+  if (/[$`{}()\\'"\s;&|<>!^]/.test(raw)) {
+    const unescaped = unescapeEscapedOrdinary(raw);
+    if (unescaped === undefined) return;
+    raw = unescaped;
+  }
   const wildcard = raw.search(/[*?\[]/);
   if (wildcard < 0) return;
   if (raw.split("/").some(unboundedComponent)) return;
@@ -35,6 +47,28 @@ export function globReadTarget(raw: string): string | undefined {
   }
   if (raw.slice(slash + 1).split("/").includes("..")) return;
   return raw.slice(0, slash + 1);
+}
+
+// Unescape `\c` for ordinary c only (letters, digits, punctuation that is
+// not shell-special here, and whitespace other than newline — `\ ` is the
+// whole point). Returns undefined when any remaining character is bare
+// dynamic material, when a backslash escapes a dynamic character, or when
+// the trailing `\` has nothing to escape.
+function unescapeEscapedOrdinary(raw: string): string | undefined {
+  let out = "";
+  for (let index = 0; index < raw.length; index++) {
+    const character = raw[index]!;
+    if (character !== "\\") {
+      if (/[$`{}()'"!^;&|<>\s]/.test(character)) return;
+      out += character;
+      continue;
+    }
+    const next = raw[++index];
+    if (next === undefined || next === "\n") return;
+    if (/[$`{}()\\'"!^;&|<>]/.test(next)) return;
+    out += next;
+  }
+  return out;
 }
 
 // True for a path component whose wildcard expansion can include `.` or

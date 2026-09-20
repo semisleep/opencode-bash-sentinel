@@ -51,4 +51,22 @@ describe("Node workflow profile", () => {
     ask("printf x > package.json && npm run build");
     allow("printf x > other.json && npm run build");
   });
+
+  it("allows read-only dependency listing without the workflow baseline", () => {
+    allow("npm ls");
+    allow("npm ls -g");
+    allow("npm list --global");
+    allow("npm ls -g --depth=0");
+    allow("npm ls typescript @types/node");
+    allow("npm ls --json");
+    allow("pnpm ls");
+    allow("yarn list");
+    allow("npm ls", { "package.json": "dirty" });
+    ask("npm ls --depth=abc");
+    ask("npm ls --long");
+    ask("npm ls -g --prefix /tmp/x");
+    ask("npm install");
+    ask("npm ls typescript && rm -rf .git");
+    ask("npm ls $PKG");
+  });
 });

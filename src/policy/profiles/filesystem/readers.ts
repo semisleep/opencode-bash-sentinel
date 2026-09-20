@@ -108,6 +108,15 @@ const GRAMMARS: Record<string, OptionGrammar> = {
     longWithValue: new Map([["--output-delimiter", /^.+$/]]),
   },
   strings: { short: "adlx", shortWithValue: "enstT" },
+  // od is a pure byte dump with no writing mode. -A (radix), -t (format
+  // string), -j/-N (byte counts) take display-only values; the attached
+  // spellings (-An, -tx1) are covered by the shared shortWithValue
+  // handling. GNU-only -w padding and -S strings stay outside the set.
+  od: {
+    short: "abcdiosvx",
+    shortWithValue: "AtjN",
+    long: new Set(["--help"]),
+  },
   // Read-only operand model; output (-o/--output), temp (-T), and
   // --compress-program forms are deliberately not in the grammar.
   sort: {

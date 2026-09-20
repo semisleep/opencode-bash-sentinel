@@ -16,6 +16,7 @@ const INFORMATION_FORMS: Record<string, RegExp> = {
   true: /^$/,
   false: /^$/,
   ":": /^$/,
+  sleep: /^ \d+(?:\.\d+)?$/,
 };
 
 export const informationNames = new Set(Object.keys(INFORMATION_FORMS));

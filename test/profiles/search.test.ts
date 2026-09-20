@@ -213,4 +213,10 @@ describe("search profiles", () => {
       'rg -n "processCustomerRelationshipsUpdate" src/domain/customer-management/server/*.ts | head -5; echo ---; rg -ln "status.*valid|\'valid\'" src/domain/customer-management/server/ | head',
     );
   });
+
+  it("accepts escaped-space glob path operands", () => {
+    allow("rg -n foo ~/Library/Application\\ Support/*bar*");
+    ask(String.raw`rg -n foo \$HOME/*x*`);
+    ask('rg -n foo "my dir/*.txt"');
+  });
 });
