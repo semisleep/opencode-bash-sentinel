@@ -226,7 +226,10 @@ export const BashSentinelPlugin: Plugin.Plugin = {
         event.effect = "allow"
         return
       }
-      if (config.alert) fireAlert(config.alert)
+      // Owner targeting: only frontends launched in this location are
+      // tinted, so with one window per project only the asking window
+      // is marked.
+      if (config.alert) fireAlert(config.alert, directory)
     }
 
     function decide(event: Evaluation): Decision {
