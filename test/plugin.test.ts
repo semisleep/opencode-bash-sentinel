@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { BashSentinelPlugin } from "../src/plugin"
-import { analyzeWorkspacePolicy } from "../src/workspace-policy"
+import { BashSentinelPlugin, defaultScratchRoots } from "../src/plugin"
+import {
+  analyzeWorkspacePolicy,
+  defaultWorkspaceContext,
+  type WorkspaceContext,
+} from "../src/workspace-policy"
 import { BUILD_ID } from "../src/version"
 import { clearAlert, fireAlert } from "../src/alert"
 import { execFileSync } from "node:child_process"
@@ -845,4 +849,91 @@ describe("system prompt guidance", () => {
     expect(system).toHaveLength(1)
     expect(system[0]!.text).toContain("opencode-bash-sentinel")
   })
+})
+
+describe("default scratch roots (ADR-0004 host defaults)", () => {
+  function userTemp(): string {
+    return execFileSync("getconf", ["DARWIN_USER_TEMP_DIR"], {
+      encoding: "utf8",
+    })
+      .trim()
+      .replace(/\/+$/, "")
+  }
+
+  function withoutTmpdir<T>(run: () => T): T {
+    const previous = process.env.TMPDIR
+    delete process.env.TMPDIR
+    try {
+      return run()
+    } finally {
+      if (previous !== undefined) process.env.TMPDIR = previous
+    }
+  }
+
+  it.skipIf(process.platform !== "darwin")(
+    "resolves the per-user temp directory without TMPDIR, in both spellings",
+    () => {
+      withoutTmpdir(() => {
+        const roots = defaultScratchRoots("/work/project")
+        const temp = userTemp()
+        expect(roots).toContain(temp)
+        expect(roots).toContain(`/private${temp}`)
+      })
+    },
+  )
+
+  it("keeps a custom TMPDIR and drops one covering home or the workspace", () => {
+    const previous = process.env.TMPDIR
+    try {
+      process.env.TMPDIR = "/custom/scratch"
+      expect(defaultScratchRoots("/work/project")).toContain("/custom/scratch")
+      process.env.TMPDIR = "/work"
+      expect(defaultScratchRoots("/work/project")).not.toContain("/work")
+      process.env.TMPDIR = HOME
+      expect(defaultScratchRoots("/work/project")).not.toContain(HOME)
+    } finally {
+      if (previous === undefined) delete process.env.TMPDIR
+      else process.env.TMPDIR = previous
+    }
+  })
+
+  it.skipIf(process.platform !== "darwin")(
+    "never lets the resolved temp root swallow a workspace inside it",
+    () => {
+      withoutTmpdir(() => {
+        for (const spelling of [userTemp(), `/private${userTemp()}`]) {
+          const roots = defaultScratchRoots(`${spelling}/opencode/ws`)
+          expect(roots, spelling).not.toContain(spelling)
+        }
+      })
+    },
+  )
+
+  it.skipIf(process.platform !== "darwin")(
+    "scratch verdicts follow the resolved roots",
+    () => {
+      withoutTmpdir(() => {
+        const temp = userTemp()
+        const ctx: WorkspaceContext = {
+          ...defaultWorkspaceContext("/work/project"),
+          scratchRoots: defaultScratchRoots("/work/project"),
+        }
+        expect(
+          analyzeWorkspacePolicy(`rm ${temp}/opencode/probe.ts`, ctx).action,
+        ).toBe("allow")
+        expect(
+          analyzeWorkspacePolicy(`rm /private${temp}/opencode/probe.ts`, ctx)
+            .action,
+        ).toBe("allow")
+        // The scratch root itself still asks (ADR-0005).
+        expect(analyzeWorkspacePolicy(`rm -rf ${temp}`, ctx).action).toBe("ask")
+        // A workspace sunk inside the temp tree keeps its red lines.
+        const sunk: WorkspaceContext = {
+          ...defaultWorkspaceContext(`${temp}/opencode/ws`),
+          scratchRoots: defaultScratchRoots(`${temp}/opencode/ws`),
+        }
+        expect(analyzeWorkspacePolicy("rm -rf .", sunk).action).toBe("ask")
+      })
+    },
+  )
 })

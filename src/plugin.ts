@@ -1,4 +1,5 @@
 import type { Plugin } from "@opencode/plugin"
+import { execFileSync } from "node:child_process"
 import os from "node:os"
 import path from "node:path"
 import {
@@ -475,22 +476,55 @@ function parseOptions(options: unknown): {
 
 // ADR-0004 default scratch roots (host layer; the engine ships no defaults).
 // /tmp plus its darwin /private/tmp spelling — matching is lexical and the
-// symlink is not canonicalized — plus the host-process TMPDIR when set,
-// absolute, and not covering a real tree. /var/tmp and /run/user are
+// symlink is not canonicalized. The per-user temp directory joins from two
+// sources: $TMPDIR when set (respecting a custom location), and on darwin
+// getconf DARWIN_USER_TEMP_DIR, which resolves the real per-user directory
+// even when a service-spawned host has no TMPDIR in its environment. Every
+// resolved root is registered in both darwin spellings (/var/X and
+// /private/var/X) because matching is lexical. /var/tmp and /run/user are
 // excluded: persistent or session state, not ephemeral by convention. Never
 // read $TMPDIR at analysis time; the resolved value is fixed here, once per
 // plugin context.
-function defaultScratchRoots(workspace: string): string[] {
+export function defaultScratchRoots(workspace: string): string[] {
   const roots = new Set<string>(["/tmp"])
   if (process.platform === "darwin") roots.add("/private/tmp")
-  const tmpdir = process.env.TMPDIR
-  if (
-    tmpdir &&
-    path.isAbsolute(tmpdir) &&
-    !coversRealTree(tmpdir, path.normalize(workspace))
-  )
-    roots.add(path.normalize(tmpdir))
+  const candidates = [process.env.TMPDIR]
+  if (process.platform === "darwin") candidates.push(darwinUserTempDir())
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    for (const spelling of darwinSpellings(candidate)) {
+      const root = stripTrailingSeparators(path.normalize(spelling))
+      if (!path.isAbsolute(root)) continue
+      // Each spelling is guarded on its own: the spelling that lexically
+      // covers a real tree (home or the workspace) drops out, so a
+      // workspace inside the temp tree never sinks into a scratch root.
+      if (!coversRealTree(root, path.normalize(workspace))) roots.add(root)
+    }
+  }
   return [...roots]
+}
+
+// confstr(_CS_DARWIN_USER_TEMP_DIR) via its CLI face: the per-user temp
+// directory, independent of the environment a daemon was spawned with. Any
+// failure just drops the candidate, leaving the static roots.
+function darwinUserTempDir(): string | undefined {
+  try {
+    return execFileSync("getconf", ["DARWIN_USER_TEMP_DIR"], {
+      encoding: "utf8",
+      timeout: 1_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim()
+  } catch {
+    return undefined
+  }
+}
+
+// Lexical matching never crosses the /private symlink, so a darwin path
+// under /var or /tmp must be registered in both spellings.
+function darwinSpellings(value: string): string[] {
+  if (value.startsWith("/private/")) return [value, value.slice("/private".length)]
+  if (/^\/(?:var|tmp)\//.test(value)) return [value, `/private${value}`]
+  return [value]
 }
 
 // A temp directory must not swallow real trees: reject a TMPDIR that equals
