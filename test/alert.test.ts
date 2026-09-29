@@ -15,7 +15,7 @@ vi.mock("node:fs", () => ({
   },
 }))
 
-import { clearAlert, fireAlert, parseAlertOption } from "../src/alert"
+import { clearAlert, fireAlert, paintClear, paintMark, parseAlertOption, selectFrontendTtys } from "../src/alert"
 
 let now = 1_000_000
 let nowSpy: ReturnType<typeof vi.spyOn>
@@ -78,20 +78,16 @@ describe("fireAlert", () => {
     expect(spawn).toHaveBeenCalledTimes(2)
   })
 
-  it("marks the iTerm2 tab and clears it on reply", () => {
+  it("marks via frontend-TTY discovery and clears on reply", () => {
     fireAlert({ sound: false, mark: true })
-    expect(fs.openSync).toHaveBeenCalledWith("/dev/tty", "w")
-    const writes = vi.mocked(fs.writeSync).mock.calls.map((call) => call[1] as string)
-    expect(writes[0]).toContain("6;1;bg;red;brightness;255")
-    expect(writes[1]).toContain("indicator=#ff3b30")
-    expect(writes.some((write) => write.includes("status="))).toBe(false)
-    expect(writes.some((write) => write.includes("RequestAttention=once"))).toBe(true)
-
-    clearAlert({ sound: false, mark: true })
-    const cleared = vi.mocked(fs.writeSync).mock.calls.at(-1)![1] as string
-    expect(cleared).toContain("6;1;bg;*;default")
-    expect(cleared).toContain("indicator=")
-    expect(cleared).toContain("RequestAttention=no")
+    // The mark channel resolves delivery targets asynchronously through ps;
+    // the spawn mock has no stdout, so no paint happens synchronously.
+    expect(spawn).toHaveBeenCalledWith(
+      "ps",
+      ["ax", "-o", "tty=,command="],
+      expect.objectContaining({ stdio: expect.anything() }),
+    )
+    expect(fs.writeSync).not.toHaveBeenCalled()
   })
 
   it("does nothing without config or after clearing", () => {
@@ -100,5 +96,54 @@ describe("fireAlert", () => {
     expect(fs.writeSync).not.toHaveBeenCalled()
     clearAlert({ sound: false, mark: true }) // nothing marked
     expect(fs.writeSync).not.toHaveBeenCalled()
+  })
+})
+
+describe("frontend mark painting", () => {
+  it("paints the mark on the discovered TTYs", () => {
+    paintMark(["ttys008"])
+    expect(fs.openSync).toHaveBeenCalledWith("/dev/ttys008", "w")
+    const first = vi.mocked(fs.writeSync).mock.calls[0]![1] as string
+    expect(first).toContain("\x07")
+    expect(first).toContain("6;1;bg;red;brightness;255")
+    expect(first).toContain("]0;🔴 approval needed\x07")
+    expect(first).toContain("RequestAttention=once")
+  })
+
+  it("falls back to /dev/tty when no frontend was found", () => {
+    paintMark([])
+    expect(fs.openSync).toHaveBeenCalledWith("/dev/tty", "w")
+  })
+
+  it("restores the title and background on clear", () => {
+    paintMark(["ttys008"])
+    paintClear(["ttys008"])
+    const cleared = vi.mocked(fs.writeSync).mock.calls.at(-1)![1] as string
+    expect(cleared).toContain("]0;opencode\x07")
+    expect(cleared).toContain("6;1;bg;*;default")
+    expect(cleared).toContain("RequestAttention=no")
+  })
+})
+
+describe("selectFrontendTtys", () => {
+  const psOutput = [
+    "  ttys008 opencode -c",
+    "  ttys009 opencode",
+    "  ttys008 opencode -c", // duplicate TTY deduplicates
+    "      ?? /opt/homebrew/Cellar/opencode-v2/2.0.18/bin/opencode serve --service",
+    "  ttys010 /usr/local/bin/opencode run --standalone",
+    "  ttys011 rg pattern src",
+    "  ttys012 node server.js",
+    "  -      launchd",
+    "",
+  ].join("\n")
+
+  it("selects opencode frontends with a TTY, excluding the daemon", () => {
+    expect(selectFrontendTtys(psOutput)).toEqual(["ttys008", "ttys009", "ttys010"])
+  })
+
+  it("returns nothing for output without frontends", () => {
+    expect(selectFrontendTtys("  ?? launchd\n")).toEqual([])
+    expect(selectFrontendTtys("")).toEqual([])
   })
 })

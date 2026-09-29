@@ -4,7 +4,7 @@ import fs from "node:fs"
 export type AlertConfig = {
   /** true plays the default sound; a string is used as a sound file path. */
   readonly sound: boolean | string
-  /** Mark the iTerm2 tab chrome and request dock attention until replied. */
+  /** Blink the frontend tab title and tint its terminal until replied. */
   readonly mark: boolean
 }
 
@@ -15,6 +15,12 @@ const LINUX_SOUNDS = [
   "/usr/share/sounds/freedesktop/stereo/bell.oga",
   "/usr/share/sounds/alsa/Front_Center.wav",
 ]
+
+const ALERT_TITLE = "🔴 approval needed"
+const IDLE_TITLE = "opencode"
+const BLINK_INTERVAL_MS = 700
+// Odd so the blink ends on the alert title; clear restores the idle title.
+const BLINK_STEPS = 7
 
 let lastFiredAt = 0
 let marked = false
@@ -45,20 +51,125 @@ export function fireAlert(config: AlertConfig | undefined): void {
   if (now - lastFiredAt < DEBOUNCE_MS) return
   lastFiredAt = now
   if (config.sound !== false) playSound(config.sound)
-  if (config.mark) markTab()
+  if (config.mark) withFrontendTtys(paintMark)
 }
 
 /** Clear a previously set mark once the permission has been replied. */
 export function clearAlert(config: AlertConfig | undefined): void {
   if (!config?.mark || !marked) return
+  marked = false
   for (const timer of blinkTimers) clearTimeout(timer)
   blinkTimers = []
-  const clear =
-    "\x1b]6;1;bg;*;default\x07" +
-    "\x1b]21337;indicator=\x07" +
-    "\x1b]1337;RequestAttention=no\x07"
-  writeToTTY(clear)
-  marked = false
+  withFrontendTtys(paintClear)
+}
+
+/** Synchronous mark painting on resolved targets; exported for tests. */
+export function paintMark(ttys: string[]): void {
+  marked = true
+  const targets = devicePaths(ttys)
+  writeAll(
+    targets,
+    "\x07" + // BEL: iTerm2's native tab-attention marker
+      "\x1b]6;1;bg;red;brightness;255\x07" +
+      "\x1b]6;1;bg;green;brightness;59\x07" +
+      "\x1b]6;1;bg;blue;brightness;48\x07" +
+      `\x1b]0;${ALERT_TITLE}\x07` +
+      "\x1b]1337;RequestAttention=once\x07",
+  )
+  for (const timer of blinkTimers) clearTimeout(timer)
+  blinkTimers = []
+  for (let step = 1; step < BLINK_STEPS; step++) {
+    const timer = setTimeout(() => {
+      if (!marked) return
+      writeAll(
+        targets,
+        `\x1b]0;${step % 2 === 1 ? IDLE_TITLE : ALERT_TITLE}\x07`,
+      )
+    }, step * BLINK_INTERVAL_MS)
+    timer.unref?.()
+    blinkTimers.push(timer)
+  }
+}
+
+/** Synchronous clear painting; exported for tests. */
+export function paintClear(ttys: string[]): void {
+  writeAll(
+    devicePaths(ttys),
+    `\x1b]0;${IDLE_TITLE}\x07` +
+      "\x1b]6;1;bg;*;default\x07" +
+      "\x1b]1337;RequestAttention=no\x07",
+  )
+}
+
+function devicePaths(ttys: string[]): string[] {
+  return ttys.length ? ttys.map((tty) => `/dev/${tty}`) : ["/dev/tty"]
+}
+
+function writeAll(targets: string[], data: string): void {
+  for (const target of targets) writeTo(target, data)
+}
+
+function writeTo(target: string, data: string): void {
+  try {
+    const fd = fs.openSync(target, "w")
+    try {
+      fs.writeSync(fd, data)
+    } finally {
+      fs.closeSync(fd)
+    }
+  } catch {
+    // Without a writable target the channel degrades to a no-op.
+  }
+}
+
+/**
+ * Deliver the mark to the TTYs of running opencode frontends. Since the
+ * v2 host (ADR-0006) runs the plugin inside the serve daemon, which has no
+ * controlling terminal, a plain /dev/tty write is a silent no-op there;
+ * discovery is what restores the v1 in-terminal visuals. Fire-and-forget:
+ * any failure simply paints nothing (or, with no frontends found, falls
+ * back to /dev/tty for non-daemon hosts).
+ */
+function withFrontendTtys(paint: (ttys: string[]) => void): void {
+  try {
+    const child = spawn("ps", ["ax", "-o", "tty=,command="], {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    let delivered = false
+    let output = ""
+    const deliver = (ttys: string[]) => {
+      if (delivered) return
+      delivered = true
+      paint(ttys)
+    }
+    child.on("error", () => deliver([]))
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString()
+    })
+    child.on("close", () => deliver(selectFrontendTtys(output)))
+  } catch {
+    paint([])
+  }
+}
+
+/** Pick the TTYs of opencode frontends from `ps ax -o tty=,command=` output. */
+export function selectFrontendTtys(psOutput: string): string[] {
+  const ttys: string[] = []
+  for (const line of psOutput.split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    const separator = trimmed.indexOf(" ")
+    const tty = separator === -1 ? trimmed : trimmed.slice(0, separator)
+    const command = separator === -1 ? "" : trimmed.slice(separator + 1).trim()
+    if (!command || tty === "??" || tty === "-") continue
+    // The serve daemon has no TTY row of interest; exclude it explicitly so
+    // only interactive frontends are marked.
+    if (/\bserve\b/.test(command)) continue
+    const executable = command.split(/\s+/)[0]!.split("/").pop()!
+    if (!executable.startsWith("opencode")) continue
+    ttys.push(tty)
+  }
+  return [...new Set(ttys)]
 }
 
 function playSound(custom: true | string) {
@@ -87,48 +198,6 @@ function playSound(custom: true | string) {
     runDetached(entry[0], entry[1], () => tryNext(index + 1))
   }
   tryNext(0)
-}
-
-function markTab() {
-  // iTerm2-only sequences: color the window/tab chrome red, show a red tab
-  // dot that blinks a few times, and bounce the dock icon once. No subtitle
-  // text (it wraps the tab to two lines); other terminals ignore unknown OSC
-  // codes, and without a controlling TTY (opencode serve) the write fails
-  // and the channel degrades to a no-op.
-  writeToTTY(
-    "\x1b]6;1;bg;red;brightness;255\x07" +
-      "\x1b]6;1;bg;green;brightness;59\x07" +
-      "\x1b]6;1;bg;blue;brightness;48\x07",
-  )
-  const indicator = (color: string) =>
-    writeToTTY(`\x1b]21337;indicator=${color}\x07`)
-  for (const timer of blinkTimers) clearTimeout(timer)
-  blinkTimers = []
-  indicator("#ff3b30")
-  const blinks = ["", "#ff3b30", "", "#ff3b30", "", "#ff3b30"]
-  blinks.forEach((color, index) => {
-    const timer = setTimeout(() => {
-      if (marked) indicator(color)
-    }, (index + 1) * 400)
-    timer.unref?.()
-    blinkTimers.push(timer)
-  })
-  marked = true
-  writeToTTY("\x1b]1337;RequestAttention=once\x07")
-}
-
-function writeToTTY(data: string) {
-  try {
-    const fd = fs.openSync("/dev/tty", "w")
-    try {
-      fs.writeSync(fd, data)
-    } finally {
-      fs.closeSync(fd)
-    }
-    return true
-  } catch {
-    return false
-  }
 }
 
 function runDetached(
