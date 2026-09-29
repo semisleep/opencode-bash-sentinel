@@ -47,6 +47,23 @@ describe("information profiles", () => {
       allow(source);
   });
 
+  it("supports ps output-format and pid selectors", () => {
+    allow("ps -o pid,ppid,lstart,etime,command -p 96906");
+    allow("ps -p 1");
+    allow("ps -p1");
+    allow("ps -o command");
+    allow("ps -ef");
+    allow("ps -ax");
+    allow("ps -o %cpu,%mem -p 1,2");
+    // Missing values, non-column/non-numeric values, and bare operands
+    // stay unrecognized; -o only formats output, -p only selects pids.
+    ask("ps -o");
+    ask("ps -o /etc/x");
+    ask("ps -p abc");
+    ask("ps extra-operand");
+    ask("ps -o command -p 1; git push");
+  });
+
   it("rejects options or operands outside each finite form", () => {
     ask("uname --unknown-flag");
     ask("uname --kernel-name extra");

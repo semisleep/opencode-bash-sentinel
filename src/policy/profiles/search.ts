@@ -147,6 +147,17 @@ export function recognizeSearch(
       if (/^--colou?r=(?:never|always|auto|tty)$/.test(value)) continue;
       // grep's legacy -NUM spelling is a context width.
       if (name === "grep" && /^-\d+$/.test(value)) continue;
+      // GNU grep's recursive-search filters (--include/--exclude/
+      // --exclude-dir) name files by glob during traversal and are
+      // read-only. Attached spellings only: a detached value is shape-
+      // identical to the pattern operand, and the unquoted glob spelling
+      // never reaches this branch as a literal (it fails the dynamic
+      // check above). rg has no such flags and keeps asking.
+      if (
+        name === "grep" &&
+        /^--(?:include|exclude|exclude-dir)=[^=\s]+$/.test(value)
+      )
+        continue;
       // rg's -r/--replace only rewrites matched text on stdout; grep's -r is
       // valueless recursion and stays in grep's cluster set below.
       if (name !== "grep") {

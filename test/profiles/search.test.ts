@@ -119,6 +119,22 @@ describe("search profiles", () => {
     );
   });
 
+  it("supports GNU grep's recursive filters without leaking to rg", () => {
+    allow('grep -rln "ConfigProvider" .reference --include="*.ts"');
+    allow('grep -rn "x" src --exclude="*.test.ts"');
+    allow('grep -rln "x" src --exclude-dir="node_modules"');
+    allow("grep -rln x src --exclude-dir=node_modules");
+    // A detached value is shape-identical to the pattern operand; rg has no
+    // such flags; an empty or missing value stays unrecognized.
+    ask('grep -rn "x" src --include "*.ts"');
+    ask('grep -rn "x" src --include');
+    ask('grep -rn "x" src --include=');
+    ask('rg -n x src --include="*.ts"');
+    ask('rg -n x src --exclude-dir="node_modules"');
+    // Red-line composition through the new surface still asks.
+    ask('grep -rln "x" . --include="*.ts" && rm -rf .git');
+  });
+
   it("supports the --help usage form for rg and grep", () => {
     allow("rg --help");
     allow("rg --hidden --help");

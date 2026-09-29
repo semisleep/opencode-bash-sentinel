@@ -10,7 +10,7 @@ const INFORMATION_FORMS: Record<string, RegExp> = {
   vm_stat: /^$/,
   nproc: /^(?: --all| --ignore \d+)?$/,
   lscpu: /^(?: -[abcepJ])*$/,
-  ps: /^(?: (?:auxw*|[aux]|-[aefx]))*$/,
+  ps: /^(?: (?:auxw*|[aux]|-[aefx]+|-o [a-zA-Z%][a-zA-Z0-9%,:]*|-p\d+(?:,\d+)*|-p \d+(?:,\d+)*))*$/,
   pwd: /^(?: -[LP]| --(?:logical|physical))?$/,
   which: /^(?: -a)?(?: [^-\s][^\s]*)*$/,
   true: /^$/,
