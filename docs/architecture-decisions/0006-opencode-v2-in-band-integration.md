@@ -1,7 +1,6 @@
 # ADR-0006: OpenCode v2 in-band permission integration
 
-- Status: proposed (decision point 3, the dialect gate and the per-agent ask
-  baseline confirmed 2026-09-29; the ADR as a whole awaits approval)
+- Status: accepted (2026-09-29; implemented the same day)
 - Date: 2026-09-29
 - Supersedes: the payload-shape origin identification of ADR-0003; completes
   the deferred write-origin half of ADR-0005 §3. Drops OpenCode 1.x support.
@@ -244,7 +243,12 @@ matching `cat > /tmp/x`. This is the scope ADR-0005 §3 accepted and deferred.
   title and generate have their own hooks), so no session filter is needed.
   Guidance stays fail-open advisory.
 - **Alerts:**
-  - fire when the evaluate hook leaves `ask` on a consumed gate;
+  - fire whenever the evaluate hook leaves `ask` on a `shell`, `edit` or
+    `external_directory` request. This includes `external_directory` asks
+    Sentinel cannot correlate (for example from a tool outside the catalogue):
+    an alert announces a prompt waiting for the user, whoever left it
+    unanswered. Other actions (such as `webfetch`) are not Sentinel's gates
+    and never alert;
   - clear on `permission.replied` from `ctx.event.subscribe`.
 - **Audit:** the log format is unchanged, except the gate name `bash` becomes
   `shell`. Correlation misses and binding failures are logged with a reason
@@ -592,5 +596,5 @@ These use a fake Promise `ctx` that drives `execute.before`,
   are allow-all for `shell` and `edit`, the maintainer chose explicit
   per-agent configuration (§10). This was preferred over Sentinel installing
   the baseline itself, and was paired with advisory baseline detection (§11).
-- Pending: the remainder of this ADR. Implementation must not start while the
-  status is `proposed`.
+- 2026-09-29: the maintainer approved the ADR as a whole and committed it.
+  Implementation followed the same day.

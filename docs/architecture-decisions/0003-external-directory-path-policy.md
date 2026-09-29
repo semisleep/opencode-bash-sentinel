@@ -1,6 +1,7 @@
 # ADR-0003: A read path policy for path-originated external_directory asks
 
-- Status: accepted
+- Status: accepted; origin identification superseded by
+  [ADR-0006](0006-opencode-v2-in-band-integration.md) (the read rule stands)
 - Date: 2026-09-11
 - Supersedes: none
 

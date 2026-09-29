@@ -4,7 +4,7 @@ import {
   type WorkspaceContext,
 } from "./workspace-policy";
 
-export type PolicyGate = "bash" | "external_directory";
+export type PolicyGate = "shell" | "external_directory";
 export type DangerousVerdict =
   | { readonly kind: "dangerous"; readonly command: string }
   | { readonly kind: "unanalyzable" };

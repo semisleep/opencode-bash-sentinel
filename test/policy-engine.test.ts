@@ -9,14 +9,14 @@ const ctx: WorkspaceContext = {
   baseline: { status: () => "clean" },
 };
 describe("permission gates", () => {
-  it("uses exactly the same policy for bash and external_directory", () => {
+  it("uses exactly the same policy for shell and external_directory", () => {
     for (const source of [
       "cat /etc/hosts",
       "echo x > out",
       "rm /tmp/x",
       "unknown",
     ]) {
-      expect(analyzeCommandPolicy(source, ctx, { gate: "bash" })).toEqual(
+      expect(analyzeCommandPolicy(source, ctx, { gate: "shell" })).toEqual(
         analyzeCommandPolicy(source, ctx, { gate: "external_directory" }),
       );
     }

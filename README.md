@@ -85,56 +85,64 @@ These are trust boundaries, not claims of complete safety.
 
 ## File-edit permission
 
-The OpenCode `edit` permission follows the same path rules as the Bash gate's write side: ordinary resolved workspace paths allow; in-workspace `.git` paths, sensitive roots, and unresolved paths ask; external edits allow only as strict descendants of a designated scratch root (including their `.git` paths), while scratch roots themselves and every other external path ask. Editing a script is allowed, while later execution is evaluated by the script red line. `scratchPaths: false` disables the scratch allowance for both the Bash and edit gates.
+The OpenCode `edit` permission (used by the `edit`, `write` and `patch` tools) follows the same path rules as the Bash gate's write side: ordinary resolved workspace paths allow; in-workspace `.git` paths, sensitive roots, and unresolved paths ask; external edits allow only as strict descendants of a designated scratch root (including their `.git` paths), while scratch roots themselves and every other external path ask. A multi-file `patch` allows only when every file passes. Editing a script is allowed, while later execution is evaluated by the script red line. `scratchPaths: false` disables the scratch allowance for both the Bash and edit gates.
+
+OpenCode asks `external_directory` before an external edit. That directory ask follows the same mutation rule, so a write to a scratch path such as `/tmp/probe/out.txt` passes both prompts, just like `echo x > /tmp/probe/out.txt`.
 
 ## OpenCode behavior
 
-The `bash` and `external_directory` permissions are independent OpenCode gates, but Sentinel applies the same complete Bash policy to both, and every gate consults the same path rules: one rule table for external reads and external mutations, consumed by the Bash situation classifier, the edit gate, and the external read path alike. Sentinel replies `once` only for allowed requests; otherwise it leaves the native dialog unanswered so the user decides.
+Sentinel decides **in-band**: OpenCode calls its `permission.evaluate` hook before showing a dialog, and Sentinel may turn an `ask` into `allow`. It never changes an `allow` or a `deny`, and it never creates a prompt of its own. Anything it does not positively recognize stays `ask`, and the native dialog decides.
 
-Path-tool `external_directory` asks (for example from the `read` or `glob` tools) follow the same outside-workspace read rule when their payload positively identifies a read-only origin: non-sensitive external paths allow, sensitive roots ask, and write-origin or unrecognized shapes stay with the native dialog.
-
-This origin identification is payload-based rather than an upstream contract — it was derived from the OpenCode 1.18.29 implementation and must be re-verified when the supported engine range changes. If a future engine changes these ask shapes, external read approvals revert to prompts (fail-closed). With `audit` enabled, every unanswered `external_directory` ask — including the edit family — is logged with its metadata shape, so such drift is visible in the audit log instead of silent.
-
-- OpenCode `deny` rules take precedence.
-- Session-scoped “always allow” answers bypass later Sentinel analysis.
-- `--auto` mode already approves everything and makes Sentinel unnecessary.
+- **`shell` and `external_directory`.** The two command gates are independent, but both use the same complete Bash policy. The command is judged from the shell tool's `workdir` when one is given, otherwise from the session directory.
+- **External path asks.** Directory asks from the `read`, `glob` and `grep` tools follow the outside-workspace read rule: non-sensitive paths allow and sensitive roots ask. Directory asks from `edit`, `write` and `patch` follow the scratch mutation rule above.
+- **Origin identification.** OpenCode's permission request carries neither the command text nor the originating tool. Sentinel recovers both by matching the request to the tool call that raised it, then checks that the tool's input actually explains the request. For example, every command segment OpenCode reports must appear in the captured command. Anything that does not match keeps asking, and with `audit` enabled the reason (`uncorrelated`, `binding mismatch`) is logged, so drift in a future engine is visible rather than silent.
+- **Bash only.** Sentinel analyzes Bash syntax, so it only approves commands that OpenCode actually runs under `bash`. Under zsh, `sh` or any other interpreter every shell request keeps asking (audited as `dialect: <name>`). This matters: zsh expands `=node` to the full path of `node`, which Bash would read as a plain file name.
+- **What Sentinel never overrides.** OpenCode `deny` rules and organization policies, and grants saved through an "always" reply (they persist per project), take precedence. Requests they cover never reach Sentinel's analysis.
+- **`--auto`.** `opencode run --auto` already approves everything not denied and makes Sentinel unnecessary.
 
 ## Installation
 
-Verified against OpenCode 1.18.29. Requires OpenCode `>=1.18.0 <2.0.0`.
+Verified against OpenCode 2.0.18. Requires OpenCode `>=2.0.18 <3.0.0`; OpenCode 1.x is not supported.
 
-From a local checkout:
+Sentinel needs three things in your OpenCode configuration (for example `~/.config/opencode/opencode.jsonc`):
 
-```json
+```jsonc
 {
-  "plugin": ["/absolute/path/to/opencode-bash-sentinel"],
-  "permission": {
-    "bash": { "*": "ask" },
-    "edit": { "*": "ask" }
-  }
+  "$schema": "https://opencode.ai/config.json",
+
+  // 1. Run agent commands under Bash (see "Bash only" above).
+  "shell": "/opt/homebrew/bin/bash",
+
+  // 2. Make shell and edit requests ask, per agent.
+  "agents": {
+    "build":   { "permissions": [
+      { "action": "shell", "resource": "*", "effect": "ask" },
+      { "action": "edit",  "resource": "*", "effect": "ask" } ] },
+    "general": { "permissions": [
+      { "action": "shell", "resource": "*", "effect": "ask" },
+      { "action": "edit",  "resource": "*", "effect": "ask" } ] }
+  },
+
+  // 3. Load the plugin: a local checkout, or "opencode-bash-sentinel" once published.
+  "plugins": ["/absolute/path/to/opencode-bash-sentinel"]
 }
 ```
 
-From npm, once published:
+1. **Bash interpreter.** Without `shell`, OpenCode uses your login shell (`$SHELL`) and falls back to `/bin/zsh` on macOS, so Sentinel approves nothing. Bash 4 or newer is recommended; macOS's bundled `/bin/bash` is 3.2. Only the agent's command execution changes. Your interactive terminal keeps its own shell, and the agent inherits the same environment variables either way, because non-interactive `zsh -c` does not read `.zshrc` either.
+2. **Per-agent ask baseline.** OpenCode's default agents allow every `shell` and `edit` request without asking. Sentinel only ever turns an `ask` into an `allow`, so without these rules it is never consulted. `build` and `general` are the built-in agents with that allow-all default; add the same two rules to any custom agent that inherits it. `external_directory` already asks by default.
+   - **Do not use top-level `permissions` for this.** They are appended to every agent, so `edit → ask` would override the read-only `plan` agent's `edit → deny`, and `shell → ask` would override the `explore` agent's deny-all. Sentinel would then approve what those agents were designed never to do.
+   - For the same reason, **remove any OpenCode 1.x `"permission"` or `"tools"` block.** OpenCode 2.x silently migrates them into top-level `permissions`.
+   - More specific allow rules you add after the baseline (for example `shell` `git *` → `allow`) keep working and simply bypass Sentinel.
+3. **The plugin itself.** It is loaded from source with no build step.
 
-```json
-{
-  "plugin": ["opencode-bash-sentinel"],
-  "permission": {
-    "bash": { "*": "ask" },
-    "edit": { "*": "ask" }
-  }
-}
-```
-
-The `edit` route is optional but recommended for consistent workspace and `.git` handling.
+If the baseline is missing, Sentinel prints one warning per agent and permission ("… arrive already allowed …") and, with `audit` enabled, logs `engine-allowed` lines.
 
 ## Options
 
 ```json
 {
-  "plugin": [
-    ["opencode-bash-sentinel", { "audit": true, "logPath": "/tmp/sentinel.jsonl" }]
+  "plugins": [
+    { "package": "opencode-bash-sentinel", "options": { "audit": true, "logPath": "/tmp/sentinel.jsonl" } }
   ]
 }
 ```
@@ -145,11 +153,11 @@ The `edit` route is optional but recommended for consistent workspace and `.git`
 | `logPath` | `~/.local/share/opencode/bash-sentinel-audit.jsonl` | Audit-log destination |
 | `sensitivePaths` | `[]` | Extra sensitive-read roots, unioned with the built-in defaults (additive only) |
 | `alert` | `false` | `true`, or `{ "sound": true, "mark": true }` per channel. `sound` also accepts a sound-file path. `mark` colors the iTerm2 tab chrome, shows a blinking red tab dot, and bounces the dock icon once; it clears when the permission is replied. Other terminals ignore the mark sequences |
-| `guidance` | built-in text | System-prompt nudge telling the agent to prefer simple literal shell commands over ad-hoc scripts, because unrecognized script execution always prompts. A string replaces the text; `false` disables injection. Advisory only — it never changes a permission verdict, and it rides an experimental engine hook that may silently disappear on engine upgrades |
+| `guidance` | built-in text | System-prompt nudge telling the agent to prefer simple literal shell commands over ad-hoc scripts, because unrecognized script execution always prompts. A string replaces the text; `false` disables injection. Advisory only — it never changes a permission verdict |
 
-By default the plugin injects this guidance into the system prompt of every session-bound request, steering the agent toward command forms the analyzer can positively recognize (fewer prompts, faster progress). Set `"guidance": false` if you do not want a permission plugin touching prompts.
+By default the plugin adds this guidance to the system prompt of every primary agent request (not to title or compaction requests), steering the agent toward command forms the analyzer can positively recognize (fewer prompts, faster progress). Set `"guidance": false` if you do not want a permission plugin touching prompts.
 
-Every audit line carries a `build` field identifying the code that produced it: the plugin's `git rev-parse --short HEAD` captured when the opencode process loaded it, with `+dirty` when engine sources were uncommitted at that moment. opencode loads this plugin directly from source with no build step and never hot-reloads it, so a running server keeps the code it started with — the `build` field is how you tell a stale-process verdict from current-source behavior.
+Every audit line carries a `build` field identifying the code that produced it: the plugin's `git rev-parse --short HEAD` captured when OpenCode loaded it, with `+dirty` when engine sources were uncommitted at that moment. OpenCode loads a local plugin directly from source with no build step and watches its files, reloading changed code. The `build` field is how you tell which code produced a given verdict.
 
 ## Development and provenance
 

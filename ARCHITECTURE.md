@@ -34,6 +34,9 @@ The following are accepted trust boundaries:
 - an approved `source` file may alter later shell interpretation; shell state is not simulated;
 - arbitrary environment semantics, network side effects, tool configuration, and concurrent changes between analysis and execution are not modeled;
 - designated scratch roots (ADR-0004) are trusted for external mutation lexically: strict descendants only, no symlink canonicalization, host-supplied and host-shrinkable, and always subordinate to the sensitive-read red line. The sensitive-root rule and the scratch-mutation rule are gate-shared path-domain rules (ADR-0005): the Bash situation classifier, the edit gate, and the external read path consult the same predicates, so the same effect semantics produce the same verdict on every gate.
+- host correlation (ADR-0006): the engine's permission request carries neither the command nor the originating tool. Sentinel recovers both from the tool call that raised the request, keyed by session and tool-call ID. It trusts that the tool input observed there is the input that executes. Rewrites of command text or path inputs are caught by binding the input back to the request's own resources; rewrites of cwd, environment, or tool routing by other installed plugins are not detected, because installed plugins are trusted code;
+- Bash execution is a precondition (ADR-0006): the analyzer implements Bash grammar, so a command is analyzed only when its invocation is observed to run under an interpreter named `bash`. Any other or unobserved interpreter asks. The interpreter is identified by executable name only, Bash version differences are accepted, and startup files such as `$BASH_ENV` are environment and are not modeled;
+- Sentinel only narrows an engine-side `ask` (ADR-0006): it never creates prompts, so it is effective only where the host configuration makes `shell` and `edit` requests ask. Where the engine already allows a request, Sentinel reports that, but never changes it.
 
 These boundaries may be changed only as architecture decisions, not by quietly widening a command profile.
 
@@ -51,7 +54,7 @@ bounded Bash parse
       -> require all units to allow and no stability conflict
 ```
 
-An allow result replies `once` to OpenCode. An ask result leaves the native dialog to the user.
+An allow result sets OpenCode's in-band permission effect from `ask` to `allow`. An ask result leaves the effect unchanged, so the native dialog goes to the user.
 
 ### Structural completeness
 
@@ -69,7 +72,7 @@ A recognizer either accepts a complete invocation and emits all required facts, 
 
 Every decision unit has one normalization-time **effective cwd**. How that directory is derived is a core invariant:
 
-1. The default is the OpenCode-provided session cwd. The workspace root is a separate containment boundary and must not replace it.
+1. The default is the cwd OpenCode supplies for the invocation: the shell tool's resolved `workdir` when given, otherwise the session's location directory. The workspace root is a separate containment boundary and must not replace it.
 2. Only the exact supported form `cd LITERAL_DIR && COMMAND` assigns the resolved directory to the right-hand command unit and any redirect units attached to that command.
 3. That derived cwd is scoped to the complete right-hand command expression, including nested decision units such as command substitutions. It is not propagated across `;`, newline, `||`, pipelines, sibling commands, or subsequent commands. A new `cd` inside a command substitution remains unsupported.
 4. A dynamic or structurally unsupported cwd transition makes the complete source unsupported. Profiles must not implement their own cwd propagation.
@@ -145,13 +148,20 @@ Equality and ancestor/descendant containment count as overlap. This comparison i
 
 ## 6. Permission-gate boundary
 
-OpenCode's `bash` and `external_directory` requests are independent gates, but both must use the same complete Bash policy. Neither is a relaxed path. Approval at one gate does not approve the other.
+OpenCode's `shell` and `external_directory` requests are independent gates, but both must use the same complete Bash policy. Neither is a relaxed path. Approval at one gate does not approve the other.
 
-`external_directory` asks arrive in two shapes. A command-carried ask uses the complete Bash policy. A path-carried ask that positively identifies a read-only tool origin (ADR-0003) follows the outside-workspace read rule: non-sensitive external reads allow, sensitive roots ask, and every unrecognized or write-origin shape asks.
+Every gate decides in-band, through OpenCode's `permission.evaluate` hook, and may change only an arriving `ask` into `allow` (ADR-0006). Arriving `allow` and `deny` effects are never modified.
+
+The origin of an `external_directory` ask is identified by host correlation with the tool call that raised it (ADR-0006, superseding ADR-0003's payload-shape identification), and the correlated input must bind to the ask's own resources:
+
+- a shell-origin ask uses the complete Bash policy;
+- a read-origin ask (`read`, `glob`, `grep`) follows the outside-workspace read rule: non-sensitive external targets allow and sensitive roots ask. The rule checks the target only, exactly like the Bash read rule;
+- a write-origin ask (`edit`, `write`, `patch`) follows the shared mutation rule: sensitive roots ask, strict scratch descendants allow, and everything else asks;
+- every uncorrelated, unbound, or unrecognized ask asks.
 
 The `edit` permission is a separate path policy and does not enter the Bash three-situation model: it has no command syntax to recognize and consumes the shared path-domain rules directly (ADR-0005). Workspace containment is evaluated first with a workspace-scoped `.git` red line mirroring situation 1; external edits follow the shared mutation rule — sensitive roots ask, strict scratch descendants (including their `.git` paths) allow, everything else asks.
 
-Gates are independent in input processing but not in rule scope (ADR-0005): each ask is answered on its own at its own gate, and the effect-semantic path rules behind them are defined once. Engine events the plugin does not consume (for example the v2 `permission.v2.asked` family) fail closed to the native dialog.
+Gates are independent in input processing but not in rule scope (ADR-0005): each ask is answered on its own at its own gate, and the effect-semantic path rules behind them are defined once. Permission actions the plugin does not consume are left untouched.
 
 ## 7. Extension contract
 
@@ -189,6 +199,6 @@ Supporting a command or fixing a test is not by itself an architecture rationale
 
 ## 9. Contract tests
 
-Architecture tests must remain separate from profile tests and permanently cover fail-closed parsing, full AST consumption, unsupported structures, independent unit classification, all-unit aggregation, the three situations and red lines, mixed inside/outside handling, cwd boundaries, stability conflicts, and the common policy shared by `bash` and `external_directory`.
+Architecture tests must remain separate from profile tests and permanently cover fail-closed parsing, full AST consumption, unsupported structures, independent unit classification, all-unit aggregation, the three situations and red lines, mixed inside/outside handling, cwd boundaries, stability conflicts, and the common policy shared by `shell` and `external_directory`.
 
 Individual command tests may evolve with their profile. They must not redefine these contracts.

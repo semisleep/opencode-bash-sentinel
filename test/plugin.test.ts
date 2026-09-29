@@ -1,8 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { BashSentinelPlugin } from "../src/plugin"
 import { analyzeWorkspacePolicy } from "../src/workspace-policy"
 import { BUILD_ID } from "../src/version"
-import type { Plugin, PluginInput } from "@opencode-ai/plugin"
 import { clearAlert, fireAlert } from "../src/alert"
 import { execFileSync } from "node:child_process"
 import {
@@ -20,148 +19,217 @@ vi.mock("../src/alert", async (importOriginal) => {
   return { ...actual, fireAlert: vi.fn(), clearAlert: vi.fn() }
 })
 
-type FetchMock = ReturnType<typeof vi.fn>
-
 const WORKSPACE = "/Users/dev/project"
+const BASH = "/opt/homebrew/bin/bash"
+const HOME = os.homedir()
 
-function makeInput(overrides: Partial<Record<keyof PluginInput, unknown>> = {}) {
-  return {
-    client: {},
-    directory: WORKSPACE,
-    worktree: WORKSPACE,
-    serverUrl: new URL("http://sentinel-test.local/"),
-    ...overrides,
-  } as unknown as Parameters<Plugin>[0]
+type Effect = "allow" | "deny" | "ask"
+type Callback = (event: any) => unknown
+
+type Request = {
+  action: string
+  resources: string[]
+  metadata?: Record<string, unknown>
+  effect?: Effect
 }
 
-function askedEvent(overrides: Record<string, unknown> = {}) {
-  return {
-    type: "permission.asked",
-    properties: {
-      id: "per_123",
-      sessionID: "ses_456",
-      permission: "bash",
-      metadata: { command: "git status" },
-      ...overrides,
-    },
-  }
-}
-
-async function emit(hooks: Awaited<ReturnType<Plugin>>, event: unknown) {
-  await hooks.event!({ event } as never)
-}
-
-let fetchMock: FetchMock
-
-function ok() {
-  return { ok: true, status: 200 } as Response
-}
-
-function notFound() {
-  return { ok: false, status: 404 } as Response
-}
-
-beforeEach(() => {
-  fetchMock = vi.fn().mockResolvedValue(ok())
-  vi.stubGlobal("fetch", fetchMock)
-})
+type Host = Awaited<ReturnType<typeof makeHost>>
 
 afterEach(() => {
-  vi.unstubAllGlobals()
   vi.unstubAllEnvs()
+  vi.clearAllMocks()
   vi.restoreAllMocks()
 })
 
-async function makePlugin(options?: Record<string, unknown>) {
-  const hooks = await BashSentinelPlugin(makeInput(), options)
-  // the startup transport probe may use the stubbed fetch; let it settle and
-  // start counting from zero
-  await new Promise((resolve) => setTimeout(resolve, 10))
-  fetchMock.mockClear()
-  return hooks
+// A fake OpenCode 2.x Promise plugin context: hook registries per domain and
+// an event stream the test can push into.
+async function makeHost(
+  options: Record<string, unknown> = {},
+  location: { directory?: string; project?: string } = {},
+) {
+  const hooks = new Map<string, Callback[]>()
+  const register = (domain: string) => async (name: string, callback: Callback) => {
+    const key = `${domain}.${name}`
+    hooks.set(key, [...(hooks.get(key) ?? []), callback])
+    return { dispose: async () => {} }
+  }
+  const events: unknown[] = []
+  let wake: (() => void) | undefined
+  const subscribe = ({ signal }: { signal: AbortSignal }) => ({
+    async *[Symbol.asyncIterator]() {
+      while (!signal.aborted) {
+        const next = events.shift()
+        if (next !== undefined) {
+          yield next
+          continue
+        }
+        await new Promise<void>((resolve) => {
+          wake = resolve
+          signal.addEventListener("abort", () => resolve(), { once: true })
+        })
+      }
+    },
+  })
+  const ctx = {
+    options,
+    location: {
+      directory: location.directory ?? WORKSPACE,
+      project: { id: "prj", directory: location.project ?? location.directory ?? WORKSPACE },
+    },
+    tool: { hook: register("tool") },
+    shell: { hook: register("shell") },
+    permission: { hook: register("permission") },
+    session: { hook: register("session") },
+    event: { subscribe },
+  }
+  const cleanup = await BashSentinelPlugin.setup(ctx as never)
+
+  async function trigger(key: string, event: unknown) {
+    for (const callback of hooks.get(key) ?? []) await callback(event)
+    return event
+  }
+
+  let counter = 0
+  async function call(
+    tool: string,
+    input: Record<string, unknown>,
+    requests: Request[],
+    options: {
+      shell?: string | false
+      sessionID?: string
+      id?: string
+      agent?: string
+      finish?: boolean
+    } = {},
+  ): Promise<Effect[]> {
+    const sessionID = options.sessionID ?? "ses_1"
+    const id = options.id ?? `call_${++counter}`
+    await trigger("tool.execute.before", { tool, sessionID, agent: "build", messageID: "msg_1", id, input })
+    if (tool === "shell" && options.shell !== false) {
+      await trigger("shell.create.before", {
+        command: input.command,
+        cwd: WORKSPACE,
+        timeout: 0,
+        shell: options.shell ?? BASH,
+        env: {},
+      })
+    }
+    const effects: Effect[] = []
+    for (const request of requests) {
+      const event = await evaluate({ ...request, sessionID, id, agent: options.agent })
+      effects.push(event.effect)
+    }
+    if (options.finish !== false) {
+      await trigger("tool.execute.after", {
+        tool,
+        sessionID,
+        agent: "build",
+        messageID: "msg_1",
+        id,
+        input,
+        status: "completed",
+        result: { content: [] },
+      })
+    }
+    return effects
+  }
+
+  async function evaluate(request: Request & { sessionID?: string; id?: string; agent?: string; source?: unknown }) {
+    return (await trigger("permission.evaluate", {
+      sessionID: request.sessionID ?? "ses_1",
+      agent: request.agent ?? "build",
+      action: request.action,
+      resources: request.resources,
+      metadata: request.metadata,
+      source: "source" in request ? request.source : { type: "tool", messageID: "msg_1", id: request.id ?? "none" },
+      effect: request.effect ?? "ask",
+    })) as { effect: Effect }
+  }
+
+  /** A shell call raising the engine's `shell` ask, resources = the command. */
+  async function shell(command: string, options: Parameters<typeof call>[3] & { workdir?: string } = {}) {
+    const input = options.workdir === undefined ? { command } : { command, workdir: options.workdir }
+    const [effect] = await call("shell", input, [{ action: "shell", resources: [command] }], options)
+    return effect
+  }
+
+  /** A shell call raising only its `external_directory` ask. */
+  async function shellExternal(command: string, resources: string[] = ["/etc/*"]) {
+    const [effect] = await call("shell", { command }, [{ action: "external_directory", resources }])
+    return effect
+  }
+
+  async function external(tool: string, input: Record<string, unknown>, resources: string[], metadata?: Record<string, unknown>) {
+    const [effect] = await call(tool, input, [{ action: "external_directory", resources, metadata }])
+    return effect
+  }
+
+  async function edit(resources: string[]) {
+    const [effect] = await call("edit", { path: resources[0] }, [{ action: "edit", resources }])
+    return effect
+  }
+
+  async function emit(event: unknown) {
+    events.push(event)
+    wake?.()
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+
+  return { hooks, trigger, call, evaluate, shell, shellExternal, external, edit, emit, cleanup }
 }
 
-describe("bash gate", () => {
-  it("safe command is approved via the legacy SDK route", async () => {
-    const legacyReply = vi.fn().mockResolvedValue({ error: undefined })
-    const hooks = await BashSentinelPlugin(
-      makeInput({ client: { postSessionIdPermissionsPermissionId: legacyReply } }),
-      undefined,
-    )
-    await emit(hooks, askedEvent())
+async function readAudit(logPath: string) {
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  const fs = await import("fs/promises")
+  const lines = (await fs.readFile(logPath, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line))
+  await fs.rm(logPath)
+  return lines
+}
 
-    expect(legacyReply).toHaveBeenCalledWith({
-      path: { id: "ses_456", permissionID: "per_123" },
-      body: { response: "once" },
-    })
-    expect(fetchMock).not.toHaveBeenCalled()
+function tempLog(name: string) {
+  return path.join(os.tmpdir(), `sentinel-${name}-${process.pid}-${Date.now()}.jsonl`)
+}
+
+describe("host contract", () => {
+  it("exports a v2 plugin definition with an id and setup", () => {
+    expect(BashSentinelPlugin.id).toBe("opencode-bash-sentinel")
+    expect(typeof BashSentinelPlugin.setup).toBe("function")
   })
 
-  it("falls through when a newer SDK reply method fails", async () => {
-    const modernReply = vi.fn().mockRejectedValue(new Error("unsupported route"))
-    const legacyReply = vi.fn().mockResolvedValue({ error: undefined })
-    const hooks = await BashSentinelPlugin(
-      makeInput({
-        client: {
-          permission: { reply: modernReply },
-          postSessionIdPermissionsPermissionId: legacyReply,
-        },
-      }),
-      undefined,
-    )
-    await emit(hooks, askedEvent())
+  it("registers the correlation, dialect and evaluate hooks", async () => {
+    const host = await makeHost()
+    for (const key of ["tool.execute.before", "tool.execute.after", "shell.create.before", "permission.evaluate"])
+      expect(host.hooks.get(key), key).toHaveLength(1)
+  })
+})
 
-    expect(modernReply).toHaveBeenCalledTimes(1)
-    expect(legacyReply).toHaveBeenCalledTimes(1)
-    expect(fetchMock).not.toHaveBeenCalled()
+describe("shell gate", () => {
+  it("recognized workspace commands are allowed in-band", async () => {
+    const host = await makeHost()
+    expect(await host.shell("git status")).toBe("allow")
+    expect(await host.shell("rm -rf build")).toBe("allow")
   })
 
-  it("writes outside the workspace escalate (no reply)", async () => {
-    const legacyReply = vi.fn()
-    const hooks = await BashSentinelPlugin(
-      makeInput({ client: { postSessionIdPermissionsPermissionId: legacyReply } }),
-      undefined,
-    )
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /etc/out" } }))
-    await emit(hooks, askedEvent({ metadata: { command: "rm ~/.zshrc" } }))
-    await emit(hooks, askedEvent({ metadata: { command: "sed -i s/a/b/ /etc/hosts" } }))
-    await emit(hooks, askedEvent({ metadata: { command: "python -c 'x'" } }))
-
-    expect(legacyReply).not.toHaveBeenCalled()
-    expect(fetchMock).not.toHaveBeenCalled()
+  it("writes outside the workspace keep asking", async () => {
+    const host = await makeHost()
+    for (const command of ["echo x > /etc/out", "rm ~/.zshrc", "sed -i s/a/b/ /etc/hosts", "python -c 'x'"])
+      expect(await host.shell(command), command).toBe("ask")
   })
 
-  it("in-workspace rm -rf is approved (upstream verdict suppressed)", async () => {
-    const legacyReply = vi.fn().mockResolvedValue({ error: undefined })
-    const hooks = await BashSentinelPlugin(
-      makeInput({ client: { postSessionIdPermissionsPermissionId: legacyReply } }),
-      undefined,
-    )
-    await emit(hooks, askedEvent({ metadata: { command: "rm -rf build" } }))
-    expect(legacyReply).toHaveBeenCalledTimes(1)
+  it("workspace-root and relative-escape writes keep asking", async () => {
+    const host = await makeHost()
+    expect(await host.shell("rm -rf .")).toBe("ask")
+    expect(await host.shell("echo x > ../outside")).toBe("ask")
   })
 
-  it("workspace-root and relative-escape writes are not approved", async () => {
-    const legacyReply = vi.fn()
-    const hooks = await BashSentinelPlugin(
-      makeInput({ client: { postSessionIdPermissionsPermissionId: legacyReply } }),
-      undefined,
-    )
-    await emit(hooks, askedEvent({ metadata: { command: "rm -rf ." } }))
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > ../outside" } }))
-    expect(legacyReply).not.toHaveBeenCalled()
-  })
-
-  it("upstream dangerous commands still escalate", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ metadata: { command: "sudo shutdown" } }))
-    await emit(hooks, askedEvent({ metadata: { command: "dd if=x of=/dev/sda" } }))
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it("unknown commands and untrusted executable paths fail closed", async () => {
-    const hooks = await makePlugin()
+  it("dangerous, unknown and untrusted forms fail closed", async () => {
+    const host = await makeHost()
     for (const command of [
+      "sudo shutdown",
+      "dd if=x of=/dev/sda",
       "totally-unknown-command --flag",
       "curl -o /tmp/out https://example.invalid/x",
       "git push",
@@ -173,21 +241,17 @@ describe("bash gate", () => {
       "printf -v PATH /tmp; ls",
       "printf x | xargs file --compile -m /tmp/magic",
       "node --require local-helper server.js",
-    ]) {
-      await emit(hooks, askedEvent({ metadata: { command } }))
-    }
-    expect(fetchMock).not.toHaveBeenCalled()
+    ])
+      expect(await host.shell(command), command).toBe("ask")
   })
 
   it("does not approve scripts or workflows when their Git baseline cannot be verified", async () => {
-    const hooks = await makePlugin()
-    for (const command of ["npm test", "make test", "python script.py", "bash scripts/build.sh", "./scripts/check"] ) {
-      await emit(hooks, askedEvent({ metadata: { command } }))
-    }
-    expect(fetchMock).not.toHaveBeenCalled()
+    const host = await makeHost()
+    for (const command of ["npm test", "make test", "python script.py", "bash scripts/build.sh", "./scripts/check"])
+      expect(await host.shell(command), command).toBe("ask")
   })
 
-  it("resolves relative commands from directory rather than the worktree root", async () => {
+  it("resolves relative commands from the location directory, not the project root", async () => {
     const worktree = mkdtempSync(path.join(os.tmpdir(), "sentinel-cwd-"))
     const directory = path.join(worktree, "sub")
     mkdirSync(directory)
@@ -209,358 +273,371 @@ describe("bash gate", () => {
       ])
       appendFileSync(path.join(directory, "check.sh"), "echo changed\n")
 
-      const legacyReply = vi.fn()
-      const hooks = await BashSentinelPlugin(
-        makeInput({
-          worktree,
-          directory,
-          client: { postSessionIdPermissionsPermissionId: legacyReply },
-        }),
-        undefined,
-      )
-      await emit(hooks, askedEvent({ metadata: { command: "./check.sh" } }))
-      expect(legacyReply).not.toHaveBeenCalled()
+      const host = await makeHost({}, { directory, project: worktree })
+      expect(await host.shell("./check.sh")).toBe("ask")
     } finally {
       rmSync(worktree, { recursive: true, force: true })
     }
   })
 
+  it("uses the shell tool's workdir as the effective cwd (ADR-0006 §5)", async () => {
+    const host = await makeHost()
+    // From the workspace root, ../out.txt escapes; from sub/ it stays inside.
+    expect(await host.shell("echo x > ../out.txt")).toBe("ask")
+    expect(await host.shell("echo x > ../out.txt", { workdir: "sub" })).toBe("allow")
+    expect(await host.shell("echo x > ../out.txt", { workdir: `${WORKSPACE}/sub` })).toBe("allow")
+    // An external workdir makes a relative mutation external.
+    expect(await host.shell("rm tmp.txt", { workdir: "/etc" })).toBe("ask")
+    expect(await host.shell("rm tmp.txt", { workdir: "~" })).toBe("ask")
+  })
+
   it("the removed upstream option can no longer disable fail-closed policy", async () => {
-    const hooks = await makePlugin({ upstream: true })
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /etc/out" } }))
-    expect(fetchMock).not.toHaveBeenCalled()
+    const host = await makeHost({ upstream: true })
+    expect(await host.shell("echo x > /etc/out")).toBe("ask")
+  })
+})
+
+describe("correlation and binding (ADR-0006 §3-§4)", () => {
+  it("an uncorrelated request keeps asking", async () => {
+    const host = await makeHost()
+    const event = await host.evaluate({ action: "shell", resources: ["git status"], id: "never-started" })
+    expect(event.effect).toBe("ask")
   })
 
-  it("missing or non-string command is ignored", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ metadata: {} }))
-    await emit(hooks, askedEvent({ metadata: { command: 42 } }))
-    expect(fetchMock).not.toHaveBeenCalled()
+  it("a non-tool source or a missing source keeps asking", async () => {
+    const host = await makeHost()
+    for (const source of [undefined, { type: "other", messageID: "m", id: "x" }]) {
+      await host.trigger("tool.execute.before", {
+        tool: "shell",
+        sessionID: "ses_1",
+        agent: "build",
+        messageID: "msg_1",
+        id: "x",
+        input: { command: "git status" },
+      })
+      const event = await host.evaluate({ action: "shell", resources: ["git status"], source })
+      expect(event.effect).toBe("ask")
+    }
   })
 
-  it("reads command from metadata.input.command as a legacy fallback", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ metadata: { input: { command: "ls -la" } } }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+  it("a call ID from another session keeps asking", async () => {
+    const host = await makeHost()
+    await host.call("shell", { command: "git status" }, [], { sessionID: "ses_a", id: "shared", finish: false })
+    const event = await host.evaluate({ action: "shell", resources: ["git status"], sessionID: "ses_b", id: "shared" })
+    expect(event.effect).toBe("ask")
   })
 
-  it("reply failure is swallowed (human answered first)", async () => {
-    fetchMock.mockResolvedValue(notFound())
-    const hooks = await makePlugin()
-    await expect(emit(hooks, askedEvent())).resolves.toBeUndefined()
-    expect(fetchMock).toHaveBeenCalledTimes(2) // new route + legacy route
+  it("resources that are not slices of the captured command keep asking", async () => {
+    const host = await makeHost()
+    const [effect] = await host.call("shell", { command: "git status" }, [
+      { action: "shell", resources: ["rm -rf /"] },
+    ])
+    expect(effect).toBe("ask")
+    const [empty] = await host.call("shell", { command: "git status" }, [{ action: "shell", resources: [] }])
+    expect(empty).toBe("ask")
   })
 
-  it("basic auth header is attached when OPENCODE_SERVER_PASSWORD is set", async () => {
-    vi.stubEnv("OPENCODE_SERVER_PASSWORD", "s3cret")
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent())
+  it("compound commands bind through their per-command slices", async () => {
+    const host = await makeHost()
+    const [effect] = await host.call("shell", { command: "git status && git diff" }, [
+      { action: "shell", resources: ["git status", "git diff"] },
+    ])
+    expect(effect).toBe("allow")
+  })
 
-    const request = fetchMock.mock.calls[0]![0] as Request
-    const expected = Buffer.from("opencode:s3cret").toString("base64")
-    expect(request.headers.get("authorization")).toBe(`Basic ${expected}`)
+  it("a duplicate call ID poisons the record", async () => {
+    const host = await makeHost()
+    await host.call("shell", { command: "git status" }, [], { id: "dup", finish: false })
+    await host.trigger("tool.execute.before", {
+      tool: "shell",
+      sessionID: "ses_1",
+      agent: "build",
+      messageID: "msg_1",
+      id: "dup",
+      input: { command: "git status" },
+    })
+    const event = await host.evaluate({ action: "shell", resources: ["git status"], id: "dup" })
+    expect(event.effect).toBe("ask")
+  })
+
+  it("a shell request correlated to another tool keeps asking", async () => {
+    const host = await makeHost()
+    const [effect] = await host.call("read", { path: "src/app.ts" }, [{ action: "shell", resources: ["git status"] }])
+    expect(effect).toBe("ask")
+  })
+
+  it("records are removed at execute.after", async () => {
+    const host = await makeHost()
+    await host.call("shell", { command: "git status" }, [], { id: "done" })
+    const event = await host.evaluate({ action: "shell", resources: ["git status"], id: "done" })
+    expect(event.effect).toBe("ask")
+  })
+
+  it("map overflow evicts the oldest record, which then asks", async () => {
+    const host = await makeHost()
+    await host.call("shell", { command: "git status" }, [], { id: "oldest", finish: false })
+    for (let index = 0; index < 256; index++)
+      await host.call("read", { path: "x" }, [], { id: `filler_${index}`, finish: false })
+    const event = await host.evaluate({ action: "shell", resources: ["git status"], id: "oldest" })
+    expect(event.effect).toBe("ask")
+  })
+})
+
+describe("dialect gate (ADR-0006 §9)", () => {
+  it("zsh execution keeps asking, including the =cmd expansion", async () => {
+    const host = await makeHost()
+    expect(await host.shell("git status", { shell: "/bin/zsh" })).toBe("ask")
+    expect(await host.shell("rm -f =node", { shell: "/bin/zsh" })).toBe("ask")
+  })
+
+  it("the same command under Bash gets the policy verdict", async () => {
+    const host = await makeHost()
+    expect(await host.shell("git status", { shell: "/bin/bash" })).toBe("allow")
+  })
+
+  it("an unobserved invocation keeps asking", async () => {
+    const host = await makeHost()
+    expect(await host.shell("git status", { shell: false })).toBe("ask")
+  })
+
+  it("the same command text observed under Bash and zsh keeps asking", async () => {
+    const host = await makeHost()
+    await host.call("shell", { command: "git status" }, [], { shell: "/bin/zsh", finish: false })
+    expect(await host.shell("git status")).toBe("ask")
+  })
+
+  it("sh and other interpreters keep asking", async () => {
+    const host = await makeHost()
+    for (const shell of ["/bin/sh", "/bin/dash", "/usr/bin/fish", "pwsh"])
+      expect(await host.shell("git status", { shell }), shell).toBe("ask")
+  })
+
+  it("shell-origin directory asks pass the dialect gate too", async () => {
+    const host = await makeHost()
+    const [effect] = await host.call(
+      "shell",
+      { command: "cat /etc/hosts" },
+      [{ action: "external_directory", resources: ["/etc/*"] }],
+      { shell: "/bin/zsh" },
+    )
+    expect(effect).toBe("ask")
+  })
+})
+
+describe("in-band effect rules (ADR-0006 §2)", () => {
+  it("an arriving deny stays deny", async () => {
+    const host = await makeHost()
+    const [effect] = await host.call("shell", { command: "git status" }, [
+      { action: "shell", resources: ["git status"], effect: "deny" },
+    ])
+    expect(effect).toBe("deny")
+  })
+
+  it("an arriving allow stays allow, even for a command Sentinel would ask on", async () => {
+    const host = await makeHost()
+    const [effect] = await host.call("shell", { command: "cat ~/.ssh/id_rsa" }, [
+      { action: "shell", resources: ["cat ~/.ssh/id_rsa"], effect: "allow" },
+    ])
+    expect(effect).toBe("allow")
+  })
+
+  it("an internal exception leaves the effect untouched and never rejects", async () => {
+    const host = await makeHost()
+    await host.call("shell", { command: "git status" }, [], { id: "boom", finish: false })
+    const event = {
+      sessionID: "ses_1",
+      action: "shell",
+      get resources(): string[] {
+        throw new Error("boom")
+      },
+      source: { type: "tool", messageID: "msg_1", id: "boom" },
+      effect: "ask" as Effect,
+    }
+    await expect(host.trigger("permission.evaluate", event)).resolves.toBe(event)
+    expect(event.effect).toBe("ask")
+  })
+
+  it("actions outside the consumed gates are untouched", async () => {
+    const host = await makeHost()
+    for (const action of ["webfetch", "read", "glob", "question", "subagent"]) {
+      const event = await host.evaluate({ action, resources: ["*"] })
+      expect(event.effect, action).toBe("ask")
+    }
+    expect(vi.mocked(fireAlert)).not.toHaveBeenCalled()
   })
 })
 
 describe("external_directory gate", () => {
-  it("read-only external commands are approved", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts" } }))
-    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cd /tmp && ls" } }))
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+  it("shell-origin read-only external commands are allowed", async () => {
+    const host = await makeHost()
+    expect(await host.shellExternal("cat /etc/hosts")).toBe("allow")
+    expect(await host.shellExternal("cd /tmp && ls", ["/tmp/*"])).toBe("allow")
+    expect(await host.shellExternal("cat /etc/hosts > out.txt")).toBe("allow")
   })
 
-  it("external and bash permissions remain independent for dangerous commands", async () => {
-    const hooks = await makePlugin()
-    // 1. external ask for rm /etc/x: policy says dangerous → no reply
-    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "rm /etc/x" } }))
-    expect(fetchMock).not.toHaveBeenCalled()
-    // 2. Approval of directory access is not treated as approval of the
-    //    command's separate bash risk, so the follow-up also stays with the human.
-    await emit(hooks, askedEvent({ metadata: { command: "rm /etc/x" } }))
-    expect(fetchMock).not.toHaveBeenCalled()
+  it("shell and external_directory remain independent for dangerous commands", async () => {
+    const host = await makeHost()
+    expect(await host.shellExternal("rm /etc/x")).toBe("ask")
+    expect(await host.shell("rm /etc/x")).toBe("ask")
   })
 
-  it("external read + in-workspace write is approved", async () => {
-    const hooks = await makePlugin()
-    await emit(
-      hooks,
-      askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts > out.txt" } }),
-    )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-
-  it("does not auto-approve external paths for unmodeled commands", async () => {
-    const hooks = await makePlugin()
+  it("does not approve external paths for unmodeled commands", async () => {
+    const host = await makeHost()
     for (const command of [
       "curl -o /tmp/out https://example.invalid/x",
       "tar -xf archive.tar -C /tmp",
       "cpio -id --directory=/tmp < archive.cpio",
       "git clone https://example.invalid/repo /tmp/repo",
       `awk -v out=/tmp/x 'BEGIN { print 1 > out }'`,
-    ]) {
-      await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command } }))
-    }
-    expect(fetchMock).not.toHaveBeenCalled()
+      "cp /etc/hosts local-copy",
+    ])
+      expect(await host.shellExternal(command, ["/tmp/*"]), command).toBe("ask")
   })
 
-  it("uses the whole-unit outside classification for mixed read/write commands", async () => {
-    const hooks = await makePlugin()
-    await emit(
-      hooks,
-      askedEvent({ permission: "external_directory", metadata: { command: "cp /etc/hosts local-copy" } }),
-    )
-    expect(fetchMock).not.toHaveBeenCalled()
+  it("read-origin asks follow the outside-workspace read rule (ADR-0003)", async () => {
+    const host = await makeHost()
+    expect(await host.external("read", { path: "/etc/hosts" }, ["/etc/*"])).toBe("allow")
+    expect(await host.external("read", { path: "/etc" }, ["/etc/*"])).toBe("allow")
+    expect(await host.external("glob", { pattern: "**", path: "/tmp" }, ["/tmp/*"])).toBe("allow")
+    expect(await host.external("grep", { pattern: "x", path: "/etc/hosts" }, ["/etc/*"])).toBe("allow")
+    expect(await host.external("read", { path: "~/.config/x" }, [`${HOME}/.config/*`])).toBe("allow")
   })
 
-  it("the removed upstream option cannot bypass this gate", async () => {
-    const hooks = await makePlugin({ upstream: true })
-    await emit(hooks, askedEvent({ permission: "external_directory", metadata: { command: "cat /etc/hosts" } }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+  it("sensitive, glob-shaped and unbound read asks keep asking", async () => {
+    const host = await makeHost()
+    expect(await host.external("read", { path: "~/.ssh/id_rsa" }, [`${HOME}/.ssh/*`])).toBe("ask")
+    expect(await host.external("glob", { pattern: "*", path: "~/.ssh" }, [`${HOME}/.ssh/*`])).toBe("ask")
+    expect(await host.external("read", { path: "/etc/*" }, ["/etc/*"])).toBe("ask")
+    expect(await host.external("read", { path: "/etc/hosts" }, ["/var/*"])).toBe("ask")
+    expect(await host.external("read", { path: "/etc/hosts" }, ["/etc/*", "/var/*"])).toBe("ask")
+    expect(await host.external("read", { path: "~root/x" }, ["/var/root/*"])).toBe("ask")
   })
 
-  it("path-originated read asks follow the outside-workspace read rule (ADR-0003)", async () => {
-    const hooks = await makePlugin()
-    const home = os.homedir()
-    // read-tool ask, external non-sensitive -> approve
-    await emit(
-      hooks,
-      askedEvent({ permission: "external_directory", metadata: { filepath: "/etc/hosts", parentDir: "/etc" } }),
-    )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    fetchMock.mockClear()
-    // glob-tool ask, directory-shaped external non-sensitive -> approve
-    await emit(
-      hooks,
-      askedEvent({ permission: "external_directory", metadata: { filepath: "/tmp", parentDir: "/tmp" } }),
-    )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    fetchMock.mockClear()
-    // sensitive read -> stays with the human
-    await emit(
-      hooks,
-      askedEvent({
-        permission: "external_directory",
-        metadata: { filepath: path.join(home, ".ssh", "id_rsa") },
-      }),
-    )
-    // glob metacharacters -> unresolvable, stays with the human
-    await emit(
-      hooks,
-      askedEvent({ permission: "external_directory", metadata: { filepath: "/etc/*" } }),
-    )
-    // edit-family ask (empty metadata) -> external writes keep asking
-    await emit(hooks, askedEvent({ permission: "external_directory", metadata: {} }))
-    expect(fetchMock).not.toHaveBeenCalled()
+  it("glob treats literal undefined/null paths as the location directory", async () => {
+    const host = await makeHost()
+    expect(await host.external("glob", { pattern: "*", path: "undefined" }, [`${WORKSPACE}/*`])).toBe("allow")
   })
 
-  it("audits unanswered external asks with their metadata shape for drift visibility", async () => {
-    const logPath = path.join(
-      os.tmpdir(),
-      `sentinel-shape-${process.pid}-${Date.now()}.jsonl`,
-    )
-    const hooks = await makePlugin({ audit: true, logPath })
-    await emit(
-      hooks,
-      askedEvent({
-        permission: "external_directory",
-        patterns: ["/etc/*"],
-        metadata: { filepath: "/etc/*" },
-      }),
-    )
-    await emit(
-      hooks,
-      askedEvent({
-        permission: "external_directory",
-        patterns: ["/Users/dev/*.zshrc/*"],
-        metadata: {},
-      }),
-    )
-    await new Promise((resolve) => setTimeout(resolve, 50))
+  it("write-origin asks follow the shared mutation rule (ADR-0006 §6)", async () => {
+    const host = await makeHost()
+    expect(await host.external("write", { path: "/tmp/s/f.txt" }, ["/tmp/s/*"])).toBe("allow")
+    expect(await host.external("edit", { path: "/tmp/co/.git/config" }, ["/tmp/co/.git/*"])).toBe("allow")
+    expect(await host.external("write", { path: "/tmp" }, ["/*"])).toBe("ask")
+    expect(await host.external("write", { path: "~/.ssh/config" }, [`${HOME}/.ssh/*`])).toBe("ask")
+    expect(await host.external("write", { path: "/etc/hosts" }, ["/etc/*"])).toBe("ask")
+    expect(await host.external("write", { path: "/tmp/s/f.txt" }, ["/tmp/*"])).toBe("ask")
+  })
 
-    const fs = await import("fs/promises")
-    const lines = (await fs.readFile(logPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line))
-    expect(lines).toHaveLength(2)
-    expect(lines[0]).toMatchObject({
-      action: "escalate",
-      reason: "unclassified external ask shape: filepath",
-      command: "/etc/*",
-    })
-    expect(lines[1]).toMatchObject({
-      action: "escalate",
-      reason: "unclassified external ask shape: no metadata",
-      command: "/Users/dev/*.zshrc/*",
-    })
-    await fs.rm(logPath)
+  it("a scratch write passes both of its asks", async () => {
+    const host = await makeHost()
+    const effects = await host.call("write", { path: "/tmp/s/f.txt", content: "x" }, [
+      { action: "external_directory", resources: ["/tmp/s/*"] },
+      { action: "edit", resources: ["/tmp/s/f.txt"] },
+    ])
+    expect(effects).toEqual(["allow", "allow"])
+  })
+
+  it("patch asks bind through the engine's filepath and parentDir metadata", async () => {
+    const host = await makeHost()
+    const effects = await host.call("patch", { patchText: "…" }, [
+      { action: "external_directory", resources: ["/tmp/s/*"], metadata: { filepath: "/tmp/s/a.txt", parentDir: "/tmp/s" } },
+      { action: "external_directory", resources: ["/tmp/t/*"], metadata: { filepath: "/tmp/t/b.txt", parentDir: "/tmp/t" } },
+      { action: "edit", resources: ["/tmp/s/a.txt", "/tmp/t/b.txt"] },
+    ])
+    expect(effects).toEqual(["allow", "allow", "allow"])
+    const [mismatch] = await host.call("patch", { patchText: "…" }, [
+      { action: "external_directory", resources: ["/tmp/s/*"], metadata: { filepath: "/tmp/s/a.txt", parentDir: "/tmp" } },
+    ])
+    expect(mismatch).toBe("ask")
+    const [missing] = await host.call("patch", { patchText: "…" }, [
+      { action: "external_directory", resources: ["/tmp/s/*"] },
+    ])
+    expect(missing).toBe("ask")
+    const [sensitive] = await host.call("patch", { patchText: "…" }, [
+      {
+        action: "external_directory",
+        resources: [`${HOME}/.ssh/*`],
+        metadata: { filepath: `${HOME}/.ssh/config`, parentDir: `${HOME}/.ssh` },
+      },
+    ])
+    expect(sensitive).toBe("ask")
+  })
+
+  it("asks from tools outside the catalogue keep asking and are audited", async () => {
+    const logPath = tempLog("uncorrelated")
+    const host = await makeHost({ audit: true, logPath })
+    const [effect] = await host.call("skill", { name: "x" }, [{ action: "external_directory", resources: ["/etc/*"] }])
+    expect(effect).toBe("ask")
+    const lines = await readAudit(logPath)
+    expect(lines).toEqual([
+      expect.objectContaining({ gate: "external_directory", action: "escalate", reason: "uncorrelated", command: "/etc/*" }),
+    ])
   })
 })
 
 describe("edit gate", () => {
-  it("in-workspace edits are approved", async () => {
-    const hooks = await makePlugin()
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/src/app.ts` } }),
-    )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+  it("in-workspace edits are allowed, relative or absolute", async () => {
+    const host = await makeHost()
+    expect(await host.edit(["src/app.ts"])).toBe("allow")
+    expect(await host.edit([`${WORKSPACE}/src/app.ts`])).toBe("allow")
+    expect(await host.edit(["src/a.ts", "src/b.ts"])).toBe("allow")
   })
 
-  it(".git paths escalate", async () => {
-    const hooks = await makePlugin()
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/.git/config` } }),
-    )
-    expect(fetchMock).not.toHaveBeenCalled()
+  it(".git, outside and escaping paths keep asking", async () => {
+    const host = await makeHost()
+    expect(await host.edit([".git/config"])).toBe("ask")
+    expect(await host.edit(["/etc/hosts"])).toBe("ask")
+    expect(await host.edit(["/Users/dev/.zshrc"])).toBe("ask")
+    expect(await host.edit(["../../outside.txt"])).toBe("ask")
   })
 
-  it("outside-workspace edits escalate", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ permission: "edit", metadata: { filepath: "/etc/hosts" } }))
-    await emit(hooks, askedEvent({ permission: "edit", metadata: { filepath: "/Users/dev/.zshrc" } }))
-    expect(fetchMock).not.toHaveBeenCalled()
+  it("every resource of a multi-file edit must pass", async () => {
+    const host = await makeHost()
+    expect(await host.edit(["src/a.ts", "/etc/hosts"])).toBe("ask")
   })
 
-  it("relative pattern fallback resolves against the workspace", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ permission: "edit", patterns: ["src/app.ts"], metadata: {} }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    fetchMock.mockClear()
-    await emit(hooks, askedEvent({ permission: "edit", patterns: ["../../outside.txt"], metadata: {} }))
-    expect(fetchMock).not.toHaveBeenCalled()
+  it("does not treat glob-shaped or empty resources as concrete paths", async () => {
+    const host = await makeHost()
+    expect(await host.edit(["**"])).toBe("ask")
+    expect(await host.edit(["{src,.git}/**"])).toBe("ask")
+    expect(await host.edit([""])).toBe("ask")
+    expect(await host.edit([])).toBe("ask")
   })
 
-  it("does not treat glob patterns as concrete edit paths", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ permission: "edit", patterns: ["**"], metadata: {} }))
-    await emit(hooks, askedEvent({ permission: "edit", patterns: ["{src,.git}/**"], metadata: {} }))
-    expect(fetchMock).not.toHaveBeenCalled()
+  it("scratch descendants allow and the root itself asks (ADR-0005)", async () => {
+    const host = await makeHost()
+    expect(await host.edit(["/tmp/sentinel-probe.ts"])).toBe("allow")
+    expect(await host.edit(["/tmp/checkout/.git/config"])).toBe("allow")
+    expect(await host.edit(["/tmp"])).toBe("ask")
   })
 
-  it("the removed upstream option cannot bypass this gate", async () => {
-    const hooks = await makePlugin({ upstream: true })
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/src/app.ts` } }),
-    )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-
-  it("scratch descendants approve and the root itself escalates (ADR-0005)", async () => {
-    const hooks = await makePlugin()
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/sentinel-probe.ts" } }),
-    )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    fetchMock.mockClear()
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/tmp" } }),
-    )
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/etc/hosts" } }),
-    )
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it("scratch .git paths approve while workspace .git still escalates", async () => {
-    const hooks = await makePlugin()
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/checkout/.git/config" } }),
-    )
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    fetchMock.mockClear()
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/.git/config` } }),
-    )
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it("sensitive external edits escalate even under a scratch root", async () => {
-    const hooks = await makePlugin({ sensitivePaths: ["/srv/secret"], scratchPaths: ["/srv"] })
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/srv/secret/key" } }),
-    )
-    expect(fetchMock).not.toHaveBeenCalled()
+  it("sensitive external edits ask even under a scratch root", async () => {
+    const host = await makeHost({ sensitivePaths: ["/srv/secret"], scratchPaths: ["/srv"] })
+    expect(await host.edit(["/srv/secret/key"])).toBe("ask")
+    expect(await host.edit(["/srv/other"])).toBe("allow")
   })
 
   it("scratchPaths: false restores the pre-ADR-0005 edit gate", async () => {
-    const hooks = await makePlugin({ scratchPaths: false })
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/sentinel-probe.ts" } }),
-    )
-    expect(fetchMock).not.toHaveBeenCalled()
+    const host = await makeHost({ scratchPaths: false })
+    expect(await host.edit(["/tmp/sentinel-probe.ts"])).toBe("ask")
   })
 
   it("audit lines pin the edit-gate reason strings", async () => {
-    const logPath = path.join(
-      os.tmpdir(),
-      `sentinel-edit-${process.pid}-${Date.now()}.jsonl`,
-    )
-    const hooks = await makePlugin({
-      audit: true,
-      logPath,
-      sensitivePaths: ["/srv/secret"],
-    })
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/sentinel-probe.ts" } }),
-    )
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/tmp/co/.git/config" } }),
-    )
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: `${WORKSPACE}/.git/config` } }),
-    )
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/etc/hosts" } }),
-    )
-    await emit(
-      hooks,
-      askedEvent({ permission: "edit", metadata: { filepath: "/srv/secret/key" } }),
-    )
-    await new Promise((resolve) => setTimeout(resolve, 50))
-
-    const fs = await import("fs/promises")
-    const lines = (await fs.readFile(logPath, "utf8"))
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line))
+    const logPath = tempLog("edit")
+    const host = await makeHost({ audit: true, logPath, sensitivePaths: ["/srv/secret"] })
+    for (const target of ["/tmp/sentinel-probe.ts", "/tmp/co/.git/config", ".git/config", "/etc/hosts", "/srv/secret/key"])
+      await host.edit([target])
+    const lines = await readAudit(logPath)
     expect(lines).toHaveLength(5)
-    expect(lines[0]).toMatchObject({ action: "approve", verdict: "safe" })
-    expect(lines[1]).toMatchObject({ action: "approve", verdict: "safe" })
-    expect(lines[2]).toMatchObject({
-      action: "escalate",
-      verdict: "dangerous",
-      detail: "edit: .git path",
-    })
-    expect(lines[3]).toMatchObject({
-      action: "escalate",
-      verdict: "dangerous",
-      detail: "edit: outside workspace",
-    })
-    expect(lines[4]).toMatchObject({
-      action: "escalate",
-      verdict: "dangerous",
-      detail: "edit: sensitive path",
-    })
-    await fs.rm(logPath)
+    expect(lines[0]).toMatchObject({ gate: "edit", action: "approve", verdict: "safe" })
+    expect(lines[1]).toMatchObject({ gate: "edit", action: "approve", verdict: "safe" })
+    expect(lines[2]).toMatchObject({ action: "escalate", verdict: "dangerous", detail: "edit: .git path" })
+    expect(lines[3]).toMatchObject({ action: "escalate", verdict: "dangerous", detail: "edit: outside workspace" })
+    expect(lines[4]).toMatchObject({ action: "escalate", verdict: "dangerous", detail: "edit: sensitive path" })
   })
 })
 
-describe("cross-gate consistency matrix (ADR-0005)", () => {
+describe("cross-gate consistency matrix (ADR-0005, ADR-0006)", () => {
   const analyzerCtx = {
     workspace: WORKSPACE,
     cwd: WORKSPACE,
@@ -571,195 +648,201 @@ describe("cross-gate consistency matrix (ADR-0005)", () => {
   }
   const rows: Array<{
     path: string
-    read: "allow" | "ask"
-    mutate: "allow" | "ask"
-    editReplies: boolean
-    readOriginReplies: boolean
+    read: Effect
+    mutate: Effect
+    edit: Effect
+    readOrigin: Effect
+    writeOrigin?: Effect
   }> = [
-    { path: `${WORKSPACE}/src/app.ts`, read: "allow", mutate: "allow", editReplies: true, readOriginReplies: true },
-    { path: `${WORKSPACE}/.git/config`, read: "allow", mutate: "ask", editReplies: false, readOriginReplies: true },
-    { path: "/tmp/matrix-probe.ts", read: "allow", mutate: "allow", editReplies: true, readOriginReplies: true },
-    { path: "/tmp/co/.git/config", read: "allow", mutate: "allow", editReplies: true, readOriginReplies: true },
-    { path: "/tmp", read: "allow", mutate: "ask", editReplies: false, readOriginReplies: true },
-    { path: "/srv/secret/key", read: "ask", mutate: "ask", editReplies: false, readOriginReplies: false },
-    { path: "/etc/hosts", read: "allow", mutate: "ask", editReplies: false, readOriginReplies: true },
-    { path: "/srv/ordinary.txt", read: "allow", mutate: "ask", editReplies: false, readOriginReplies: true },
+    { path: `${WORKSPACE}/src/app.ts`, read: "allow", mutate: "allow", edit: "allow", readOrigin: "allow" },
+    { path: `${WORKSPACE}/.git/config`, read: "allow", mutate: "ask", edit: "ask", readOrigin: "allow" },
+    { path: "/tmp/matrix-probe.ts", read: "allow", mutate: "allow", edit: "allow", readOrigin: "allow", writeOrigin: "allow" },
+    { path: "/tmp/co/.git/config", read: "allow", mutate: "allow", edit: "allow", readOrigin: "allow", writeOrigin: "allow" },
+    { path: "/tmp", read: "allow", mutate: "ask", edit: "ask", readOrigin: "allow", writeOrigin: "ask" },
+    { path: "/srv/secret/key", read: "ask", mutate: "ask", edit: "ask", readOrigin: "ask", writeOrigin: "ask" },
+    { path: "/etc/hosts", read: "allow", mutate: "ask", edit: "ask", readOrigin: "allow", writeOrigin: "ask" },
+    { path: "/srv/ordinary.txt", read: "allow", mutate: "ask", edit: "ask", readOrigin: "allow", writeOrigin: "ask" },
   ]
 
-  it("the edit gate and read-origin asks agree with the Bash verdicts per path class", async () => {
-    const hooks = await makePlugin({ sensitivePaths: ["/srv/secret"] })
-    for (const { path, read, mutate, editReplies, readOriginReplies } of rows) {
+  it("every gate agrees with the Bash verdicts per path class", async () => {
+    const host = await makeHost({ sensitivePaths: ["/srv/secret"], scratchPaths: ["/tmp", "/private/tmp"] })
+    for (const row of rows) {
+      expect(analyzeWorkspacePolicy(`cat ${row.path}`, analyzerCtx).action, `bash read ${row.path}`).toBe(row.read)
       expect(
-        analyzeWorkspacePolicy(`cat ${path}`, analyzerCtx).action,
-        `bash read ${path}`,
-      ).toBe(read)
+        analyzeWorkspacePolicy(`strings /bin/ls > ${row.path}`, analyzerCtx).action,
+        `bash mutate ${row.path}`,
+      ).toBe(row.mutate)
+      expect(await host.edit([row.path]), `edit gate ${row.path}`).toBe(row.edit)
       expect(
-        analyzeWorkspacePolicy(`strings /bin/ls > ${path}`, analyzerCtx).action,
-        `bash mutate ${path}`,
-      ).toBe(mutate)
-      fetchMock.mockClear()
-      await emit(hooks, askedEvent({ permission: "edit", metadata: { filepath: path } }))
-      expect(fetchMock.mock.calls.length > 0, `edit gate ${path}`).toBe(editReplies)
-      fetchMock.mockClear()
-      await emit(
-        hooks,
-        askedEvent({ permission: "external_directory", metadata: { filepath: path } }),
-      )
-      expect(fetchMock.mock.calls.length > 0, `read-origin ask ${path}`).toBe(readOriginReplies)
-      fetchMock.mockClear()
+        await host.external("read", { path: row.path }, [path.join(path.dirname(row.path), "*")]),
+        `read-origin ask ${row.path}`,
+      ).toBe(row.readOrigin)
+      if (row.writeOrigin !== undefined)
+        expect(
+          await host.external("write", { path: row.path }, [path.join(path.dirname(row.path), "*")]),
+          `write-origin ask ${row.path}`,
+        ).toBe(row.writeOrigin)
     }
   })
 })
 
-describe("other events are ignored", () => {
-  it("non-permission and non-bash events never reply", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, { type: "session.created", properties: {} })
-    await emit(hooks, { type: "permission.replied", properties: {} })
-    await emit(hooks, askedEvent({ permission: "webfetch" }))
-    expect(fetchMock).not.toHaveBeenCalled()
+describe("scratch roots (ADR-0004)", () => {
+  it("default host list allows scratch mutations and keeps the root red line", async () => {
+    const host = await makeHost()
+    expect(await host.shell("echo x > /tmp/out")).toBe("allow")
+    expect(await host.shell("rm -rf /tmp/")).toBe("ask")
+  })
+
+  it("scratchPaths: false disables the feature entirely", async () => {
+    const host = await makeHost({ scratchPaths: false })
+    expect(await host.shell("echo x > /tmp/out")).toBe("ask")
+  })
+
+  it("a scratchPaths array replaces the default list", async () => {
+    const host = await makeHost({ scratchPaths: ["/srv/scratch"] })
+    expect(await host.shell("echo x > /tmp/out")).toBe("ask")
+    expect(await host.shell("echo x > /srv/scratch/out")).toBe("allow")
+  })
+
+  it("a TMPDIR covering the workspace is rejected as a scratch root", async () => {
+    vi.stubEnv("TMPDIR", "/Users/dev")
+    const host = await makeHost()
+    expect(await host.shell("echo x > /Users/dev/tmp-out")).toBe("ask")
+    expect(await host.shell("echo x > /tmp/out")).toBe("allow")
   })
 })
 
-describe("alert hooks", () => {
-  it("escalations alert and replies clear the mark", async () => {
-    const hooks = await makePlugin({ alert: { sound: true, mark: true } })
-    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /" } }))
+describe("baseline detection (ADR-0006 §11)", () => {
+  it("arriving allows are audited as engine-allowed", async () => {
+    const logPath = tempLog("engine-allowed")
+    const host = await makeHost({ audit: true, logPath })
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    await host.call("shell", { command: "git status" }, [{ action: "shell", resources: ["git status"], effect: "allow" }])
+    await host.call("edit", { path: "src/a.ts" }, [{ action: "edit", resources: ["src/a.ts"], effect: "allow" }])
+    const lines = await readAudit(logPath)
+    expect(lines).toEqual([
+      expect.objectContaining({ gate: "shell", action: "engine-allowed", command: "git status", reason: "agent: build" }),
+      expect.objectContaining({ gate: "edit", action: "engine-allowed", command: "src/a.ts" }),
+    ])
+  })
+
+  it("warns once per agent and action", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const host = await makeHost()
+    for (let index = 0; index < 3; index++)
+      await host.call("shell", { command: "ls" }, [{ action: "shell", resources: ["ls"], effect: "allow" }])
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]![0]).toContain("agents.<id>.permissions")
+    await host.call("edit", { path: "a" }, [{ action: "edit", resources: ["a"], effect: "allow" }])
+    expect(warn).toHaveBeenCalledTimes(2)
+    await host.call("shell", { command: "ls" }, [{ action: "shell", resources: ["ls"], effect: "allow" }], {
+      agent: "general",
+    })
+    expect(warn).toHaveBeenCalledTimes(3)
+  })
+
+  it("an arriving allow on external_directory is audited but does not warn", async () => {
+    const logPath = tempLog("engine-allowed-external")
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const host = await makeHost({ audit: true, logPath })
+    await host.call("read", { path: "/tmp/x" }, [{ action: "external_directory", resources: ["/tmp/*"], effect: "allow" }])
+    // Uncorrelated arriving allows are not Sentinel's concern at all.
+    await host.evaluate({ action: "external_directory", resources: ["/tmp/*"], effect: "allow", id: "none" })
+    expect(warn).not.toHaveBeenCalled()
+    const lines = await readAudit(logPath)
+    expect(lines).toEqual([
+      expect.objectContaining({ gate: "external_directory", action: "engine-allowed", command: "/tmp/x" }),
+    ])
+  })
+})
+
+describe("alerts", () => {
+  it("escalations alert, approvals do not, and replies clear the mark", async () => {
+    const host = await makeHost({ alert: { sound: true, mark: true } })
+    expect(await host.shell("rm -rf /")).toBe("ask")
     expect(vi.mocked(fireAlert)).toHaveBeenCalledTimes(1)
-    await emit(hooks, askedEvent()) // git status is auto-approved
+    expect(await host.shell("git status")).toBe("allow")
     expect(vi.mocked(fireAlert)).toHaveBeenCalledTimes(1)
-    await emit(hooks, { type: "permission.replied", properties: {} })
+    await host.emit({ type: "session.updated", data: {} })
+    expect(vi.mocked(clearAlert)).not.toHaveBeenCalled()
+    await host.emit({ type: "permission.replied", data: { sessionID: "ses_1", requestID: "per_1", reply: "once" } })
     expect(vi.mocked(clearAlert)).toHaveBeenCalledTimes(1)
+    await host.cleanup?.()
+  })
+
+  it("uncorrelated external_directory asks alert too; other actions never do", async () => {
+    const host = await makeHost({ alert: true })
+    const [effect] = await host.call("skill", { name: "x" }, [{ action: "external_directory", resources: ["/etc/*"] }])
+    expect(effect).toBe("ask")
+    expect(vi.mocked(fireAlert)).toHaveBeenCalledTimes(1)
+    await host.evaluate({ action: "webfetch", resources: ["https://example.invalid"] })
+    expect(vi.mocked(fireAlert)).toHaveBeenCalledTimes(1)
   })
 
   it("never alerts without the option", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /" } }))
-    await emit(hooks, { type: "permission.replied", properties: {} })
+    const host = await makeHost()
+    expect(await host.shell("rm -rf /")).toBe("ask")
+    await host.emit({ type: "permission.replied", data: {} })
     expect(vi.mocked(fireAlert)).not.toHaveBeenCalled()
     expect(vi.mocked(clearAlert)).not.toHaveBeenCalled()
   })
 })
 
-describe("scratch roots (ADR-0004)", () => {
-  it("default host list approves scratch mutations and keeps the root red line", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /tmp/" } }))
-    expect(fetchMock).toHaveBeenCalledTimes(1) // no second reply
-  })
-
-  it("scratchPaths: false disables the feature entirely", async () => {
-    const hooks = await makePlugin({ scratchPaths: false })
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-
-  it("a scratchPaths array replaces the default list", async () => {
-    const hooks = await makePlugin({ scratchPaths: ["/srv/scratch"] })
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
-    expect(fetchMock).not.toHaveBeenCalled()
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /srv/scratch/out" } }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-
-  it("a TMPDIR covering the workspace is rejected as a scratch root", async () => {
-    vi.stubEnv("TMPDIR", "/Users/dev")
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /Users/dev/tmp-out" } }))
-    expect(fetchMock).not.toHaveBeenCalled()
-    // /tmp remains scratch even when the TMPDIR candidate was rejected
-    await emit(hooks, askedEvent({ metadata: { command: "echo x > /tmp/out" } }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-  })
-})
-
 describe("audit log", () => {
   it("appends one JSONL line per decision when enabled", async () => {
-    const os = await import("os")
-    const path = await import("path")
-    const fs = await import("fs/promises")
-    const logPath = path.join(os.tmpdir(), `sentinel-test-${process.pid}-${Date.now()}.jsonl`)
-
-    const hooks = await makePlugin({ audit: true, logPath })
-    await emit(hooks, askedEvent())
-    await emit(hooks, askedEvent({ metadata: { command: "rm -rf /etc/x" } }))
-    await new Promise((resolve) => setTimeout(resolve, 50))
-
-    const lines = (await fs.readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line))
-    expect(lines).toHaveLength(2)
-    for (const line of lines)
-      expect(line.build).toBe(BUILD_ID)
-    expect(lines).toContainEqual(
-      expect.objectContaining({ gate: "bash", command: "git status", verdict: "safe", action: "approve" }),
-    )
-    expect(lines).toContainEqual(
-      expect.objectContaining({ gate: "bash", command: "rm -rf /etc/x", verdict: "unanalyzable", action: "escalate" }),
-    )
-    await fs.rm(logPath)
+    const logPath = tempLog("audit")
+    const host = await makeHost({ audit: true, logPath })
+    await host.shell("git status")
+    await host.shell("rm -rf /etc/x")
+    await host.shell("git status", { shell: "/bin/zsh" })
+    const lines = await readAudit(logPath)
+    expect(lines).toHaveLength(3)
+    for (const line of lines) expect(line.build).toBe(BUILD_ID)
+    expect(lines[0]).toMatchObject({ gate: "shell", command: "git status", verdict: "safe", action: "approve" })
+    expect(lines[1]).toMatchObject({ gate: "shell", command: "rm -rf /etc/x", verdict: "unanalyzable", action: "escalate" })
+    expect(lines[2]).toMatchObject({ gate: "shell", command: "git status", action: "escalate", reason: "dialect: zsh" })
   })
 
   it("does not write anything by default", async () => {
-    const os = await import("os")
-    const path = await import("path")
-    const fs = await import("fs/promises")
-    const logPath = path.join(os.tmpdir(), `sentinel-default-${process.pid}-${Date.now()}.jsonl`)
-
-    const hooks = await makePlugin({ logPath })
-    await emit(hooks, askedEvent())
+    const logPath = tempLog("default")
+    const host = await makeHost({ logPath })
+    await host.shell("git status")
     await new Promise((resolve) => setTimeout(resolve, 50))
-
+    const fs = await import("fs/promises")
     await expect(fs.access(logPath)).rejects.toThrow()
   })
 })
 
 describe("system prompt guidance", () => {
-  async function transform(
-    hooks: Awaited<ReturnType<Plugin>>,
-    sessionID?: string,
-  ) {
-    const output = { system: [] as string[] }
-    await hooks["experimental.chat.system.transform"]!(
-      { sessionID, model: {} as never },
-      output as never,
-    )
-    return output.system
+  async function context(host: Host) {
+    const event = { system: [] as Array<{ type: string; text: string }> }
+    await host.trigger("session.context", event)
+    return event.system
   }
 
-  it("appends the default guidance for session-bound requests", async () => {
-    const hooks = await makePlugin()
-    const system = await transform(hooks, "ses_456")
+  it("appends the default guidance to primary requests", async () => {
+    const host = await makeHost()
+    const system = await context(host)
     expect(system).toHaveLength(1)
-    expect(system[0]).toContain("opencode-bash-sentinel")
-    expect(system[0]).toContain("temporary script")
-  })
-
-  it("skips session-less requests (hidden agents)", async () => {
-    const hooks = await makePlugin()
-    expect(await transform(hooks, undefined)).toHaveLength(0)
+    expect(system[0]!.type).toBe("text")
+    expect(system[0]!.text).toContain("opencode-bash-sentinel")
+    expect(system[0]!.text).toContain("temporary script")
   })
 
   it("does not register the hook when disabled", async () => {
-    const hooks = await makePlugin({ guidance: false })
-    expect(hooks["experimental.chat.system.transform"]).toBeUndefined()
+    const host = await makeHost({ guidance: false })
+    expect(host.hooks.get("session.context")).toBeUndefined()
   })
 
   it("uses a custom text when provided", async () => {
-    const hooks = await makePlugin({ guidance: "prefer plain commands" })
-    expect(await transform(hooks, "ses_456")).toEqual(["prefer plain commands"])
+    const host = await makeHost({ guidance: "prefer plain commands" })
+    expect(await context(host)).toEqual([{ type: "text", text: "prefer plain commands" }])
   })
 
   it("empty string falls back to the default text, not off", async () => {
-    const hooks = await makePlugin({ guidance: "" })
-    const system = await transform(hooks, "ses_456")
+    const host = await makeHost({ guidance: "" })
+    const system = await context(host)
     expect(system).toHaveLength(1)
-    expect(system[0]).toContain("opencode-bash-sentinel")
-  })
-
-  it("the event hook still works alongside guidance", async () => {
-    const hooks = await makePlugin()
-    await emit(hooks, askedEvent({ metadata: { command: "cat /etc/hosts" } }))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(system[0]!.text).toContain("opencode-bash-sentinel")
   })
 })

@@ -1,6 +1,7 @@
 // Minimal OpenAI-compatible mock model for e2e testing opencode-bash-sentinel.
 // Deterministic protocol:
-//   - when a user message starts with "CMD:<command>" -> stream a bash tool call with that command
+//   - when a user message starts with "CMD:<command>" -> stream a shell tool call with that command
+//   - when a user message starts with "EDITW:<path>" -> stream a write tool call for that path
 //   - otherwise (title generation, tool result follow-ups, ...) -> stream short text
 const PORT = 8997
 
@@ -24,6 +25,8 @@ function chunk(delta, finish_reason = null) {
     choices: [{ index: 0, delta, finish_reason }],
   })}\n\n`
 }
+
+let calls = 0
 
 const server = http.createServer((req, res) => {
   if (!req.url.includes("/chat/completions")) {
@@ -49,14 +52,16 @@ const server = http.createServer((req, res) => {
       "cache-control": "no-cache",
       connection: "keep-alive",
     })
+    // Sentinel correlates permission asks by tool-call ID, so keep IDs unique.
+    const id = `call_${++calls}`
     if (command) {
-      res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: "" } }] }))
+      res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name: "shell", arguments: "" } }] }))
       res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ command }) } }] }))
       res.write(chunk({}, "tool_calls"))
-      console.log(`[mock] tool-call bash ${JSON.stringify(command)}`)
+      console.log(`[mock] tool-call shell ${JSON.stringify(command)}`)
     } else if (editPath) {
-      res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "write", arguments: "" } }] }))
-      res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ filePath: editPath, content: "written by sentinel e2e\n" }) } }] }))
+      res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name: "write", arguments: "" } }] }))
+      res.write(chunk({ tool_calls: [{ index: 0, function: { arguments: JSON.stringify({ path: editPath, content: "written by sentinel e2e\n" }) } }] }))
       res.write(chunk({}, "tool_calls"))
       console.log(`[mock] tool-call write ${JSON.stringify(editPath)}`)
     } else {

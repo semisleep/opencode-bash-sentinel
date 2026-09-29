@@ -2,7 +2,8 @@
 
 - Status: accepted (decision points confirmed 2026-09-11; edit-gate half
   implemented same day; write-origin half deferred per the verification
-  outcome below)
+  outcome below, and completed by
+  [ADR-0006](0006-opencode-v2-in-band-integration.md) §6)
 - Date: 2026-09-11
 - Supersedes: none; generalizes ADR-0003 (read-side unification) and
   ADR-0004 (scratch roots), and subsumes the edit-gate gap those two left.

@@ -20,7 +20,7 @@ src/policy/profiles/           complete command-specific recognizers
 src/policy/analyze.ts          situation rules and source aggregation
 src/workspace-policy.ts        compatibility/public export facade
 src/policy-engine.ts           gate-facing policy entry point
-src/plugin.ts                  OpenCode event and reply adapter
+src/plugin.ts                  OpenCode 2.x in-band hook adapter
 ```
 
 The boundaries are intentional:
@@ -74,7 +74,7 @@ test/policy/cwd.test.ts            cwd normalization boundary
 test/policy/redirect.test.ts       redirect decision units
 test/profiles/<profile>.test.ts    one command/profile grammar
 test/policy-engine.test.ts         gate-facing policy behavior
-test/plugin.test.ts                OpenCode integration and transport
+test/plugin.test.ts                OpenCode 2.x hooks, correlation, dialect gate
 ```
 
 Profile tests should include:
@@ -98,21 +98,30 @@ git diff --check
 
 ## OpenCode integration
 
-`bash` and `external_directory` are distinct permission requests but share one Bash policy entry point. `edit` remains a separate path policy. Adapter code may extract event data, invoke policy, audit, and reply; it must not add command-specific approval behavior.
+`shell` and `external_directory` are distinct permission requests but share one Bash policy entry point. `edit` remains a separate path policy. Adapter code may observe hook events, correlate them, invoke policy, audit, and set the in-band effect. It must not add command-specific approval behavior.
 
-Integration assumptions currently verified against OpenCode 1.18.29 include:
+The adapter is specified by [ADR-0006](docs/architecture-decisions/0006-opencode-v2-in-band-integration.md). Integration assumptions currently verified against OpenCode 2.0.18 (`.reference/opencode-v2`, tag `v2.0.18`):
 
-- command text is read from `event.properties.metadata.command`, with the older `metadata.input.command` fallback;
-- `external_directory` asks arrive in three shapes: bash-origin asks carry `metadata.command` (complete Bash policy); read-only path tools (`read`, `glob`, `list`) carry a concrete `metadata.filepath` with `parentDir` and follow the ADR-0003 read rule via the shared path-domain rule (ADR-0005); the v2 edit family (`edit`/`write`/`patch`) carries empty metadata and is deliberately left unanswered. The origin identification is payload-based, not an upstream contract: if the engine changes these shapes, external reads fail closed back to prompts, and every unanswered ask is audited with its metadata keys so drift is visible. Re-verify these shapes when changing the supported engine range, because no explicit origin field exists in the ask payload;
-- v2 permission asks publish as `permission.v2.asked` (action/resources payload), a distinct event type the plugin does not consume; they fail closed to the native dialog. Verified against the 1.18.29 binary: the legacy `edit` tool fires only the `edit` ask (no accompanying `external_directory` ask), and the v2 `LocationMutation` family publishes only on the v2 channel;
-- the plugin observes `permission.asked` and replies programmatically;
-- a successful automatic approval replies `once`;
-- human/plugin reply races may yield a benign not-found result;
-- server password configuration requires basic authorization;
-- `deny` and previously granted session-wide permission take precedence before this analysis can help;
-- the optional agent guidance (`guidance` option, on by default) is injected through the `experimental.chat.system.transform` hook, which the 1.18.29 SDK types as `(input, output) => Promise<void>` with an in-place `output.system.push`. The `experimental.` prefix carries no upstream stability promise: if the engine renames, removes, or stops invoking the hook (including on v2-only request paths), the guidance silently disappears — advisory-only fail-open, no permission verdict is affected. Requests without a `sessionID` (hidden agents such as title/compaction) are skipped. Re-verify hook invocation when changing the supported engine range.
+- **Plugin shape.** The plugin is a default export `{ id, setup(ctx) }` (the Promise API of `@opencode/plugin`). `@opencode/plugin` is a type-only devDependency, so the plugin carries no runtime dependency on the SDK. Workspace is `ctx.location.project.directory` (the location directory when the project is the filesystem root); the session default cwd is `ctx.location.directory`.
+- **In-band verdict.** `permission.evaluate` runs after configured `deny` rules have already short-circuited, with a mutable `effect`. The adapter changes only `ask` to `allow`. A rejected hook promise becomes an engine defect that fails the tool call, so every callback swallows its own exceptions.
+- **Default rules.** The default agent rules are allow-all for `shell` and `edit`. Only a per-agent `ask` baseline (README "Installation") makes those requests reach the hook as `ask`. Arriving allows are audited as `engine-allowed`, and `shell`/`edit` warn once per agent.
+- **Correlation.** Requests carry no command text and no tool name. `source.id` equals the tool-call ID seen by `tool` `execute.before`/`execute.after`. The consumed tools (`shell`, `read`, `glob`, `grep`, `edit`, `write`, `patch`) are all `codemode: false`, so one call ID is one invocation.
+- **Resource formats.**
+  - `shell` resources are trimmed slices of the command, from either scanner; the adapter binds them by substring.
+  - `external_directory` resources are `DIR/*` for the resolved target (the file's directory, or the directory itself), with no metadata except `patch`'s `{ filepath, parentDir }`.
+  - `edit` resources are literal paths, relative to the location directory when internal and absolute when external.
+- **Interpreter.** The shell interpreter comes from config `shell`, else `$SHELL`, else the platform fallback (`/bin/zsh` on darwin). `shell` `create.before` fires immediately before the same call's permission requests, with the final `invocation.shell`. The dialect gate matches observations to calls by exact command text.
+- **Advisory hooks.** Guidance uses `session` `context`, which fires only for primary requests. Alerts clear on `permission.replied` from `ctx.event.subscribe` (envelope `{ type, data }`).
+- **Precedence.** Saved "always" grants (per project) and session permissions are merged after agent rules and bypass Sentinel.
+- **Reloading.** Local plugin sources are watched and reloaded on change. A reload starts with an empty correlation map, so in-flight calls ask.
 
-Re-verify these assumptions when changing the supported OpenCode engine range.
+Re-verify these assumptions whenever the supported engine range changes. The quickest end-to-end check is `opencode run --standalone` with `OPENCODE_CONFIG_DIR` pointing at a throwaway config that loads this checkout with `audit` enabled:
+
+- an approvable command runs;
+- an external write asks;
+- a zsh `shell` setting yields `dialect: zsh`;
+- a scratch `write` passes both of its asks;
+- removing the per-agent baseline yields `engine-allowed`.
 
 ## Parser provenance
 
