@@ -25,44 +25,28 @@ export function defaultWorkspaceContext(
   };
 }
 
+/**
+ * ADR-0007: no commit is pinned. A file is clean when it is present in the
+ * current HEAD and the index and worktree match HEAD for that path; HEAD is
+ * resolved at each decision, so trust follows the current commit and a commit
+ * takes effect at the next decision without a reload.
+ */
 class GitBaseline implements BaselineInspector {
-  private readonly baselineRef: string | undefined;
-
-  constructor(private workspace: string) {
-    try {
-      this.baselineRef = execFileSync(
-        "git",
-        ["-C", this.workspace, "rev-parse", "--verify", "HEAD"],
-        {
-          encoding: "utf8",
-          stdio: ["ignore", "pipe", "ignore"],
-          timeout: 1_000,
-        },
-      ).trim();
-    } catch {
-      this.baselineRef = undefined;
-    }
-  }
+  constructor(private workspace: string) {}
 
   status(file: string): BaselineStatus {
     if (!withinWorkspace(file, this.workspace)) return "unknown";
-    if (!this.baselineRef) return "unknown";
     const relative = this.relative(file);
     if (!relative) return "unknown";
     try {
       execFileSync(
         "git",
-        [
-          "-C",
-          this.workspace,
-          "cat-file",
-          "-e",
-          `${this.baselineRef}:${relative}`,
-        ],
+        ["-C", this.workspace, "cat-file", "-e", `HEAD:${relative}`],
         { stdio: "ignore", timeout: 1_000 },
       );
     } catch {
-      return "absent";
+      // Distinguish "no repository / no HEAD" from "not in HEAD".
+      return this.hasHead() ? "absent" : "unknown";
     }
     try {
       execFileSync(
@@ -76,7 +60,7 @@ class GitBaseline implements BaselineInspector {
           "--quiet",
           "--no-ext-diff",
           "--no-textconv",
-          this.baselineRef,
+          "HEAD",
           "--",
           relative,
         ],
@@ -104,13 +88,12 @@ class GitBaseline implements BaselineInspector {
   }
 
   committedText(file: string): string | undefined {
-    if (!this.baselineRef) return undefined;
     const relative = this.relative(file);
     if (!relative) return undefined;
     try {
       return execFileSync(
         "git",
-        ["-C", this.workspace, "show", `${this.baselineRef}:${relative}`],
+        ["-C", this.workspace, "show", `HEAD:${relative}`],
         {
           encoding: "utf8",
           timeout: 1_000,
@@ -119,6 +102,19 @@ class GitBaseline implements BaselineInspector {
       );
     } catch {
       return undefined;
+    }
+  }
+
+  private hasHead(): boolean {
+    try {
+      execFileSync(
+        "git",
+        ["-C", this.workspace, "rev-parse", "--verify", "HEAD"],
+        { stdio: "ignore", timeout: 1_000 },
+      );
+      return true;
+    } catch {
+      return false;
     }
   }
 

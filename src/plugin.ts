@@ -126,8 +126,9 @@ export const BashSentinelPlugin: Plugin.Plugin = {
         : config.scratchPaths === false
           ? []
           : config.scratchPaths
-    // Created once: the ADR-0001 baseline is captured here and shared by
-    // every per-call context derived below.
+    // Created once: the baseline inspector is shared by every per-call context
+    // derived below. It pins nothing (ADR-0007) — trust follows the current
+    // HEAD at each decision.
     const base = defaultWorkspaceContext(
       workspace,
       directory,

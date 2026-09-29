@@ -11,7 +11,7 @@ src/parser/                    bounded Bash syntax service
 src/policy/normalize.ts        supported structure, full AST coverage, cwd facts
 src/policy/types.ts            decision units and shared fact types
 src/policy/paths.ts            lexical path resolution and containment
-src/policy/baseline.ts         session-fixed committed-and-unchanged baseline
+src/policy/baseline.ts         HEAD-committed-and-unchanged baseline (ADR-0007)
 src/policy/sensitive.ts        sensitive-read roots for the situation-2 red line
 src/policy/scratch.ts          ADR-0004 scratch roots for external mutations
 src/policy/path-domain.ts      ADR-0005 gate-shared external read/mutation rules
@@ -113,7 +113,7 @@ The adapter is specified by [ADR-0006](docs/architecture-decisions/0006-opencode
 - **Interpreter.** The shell interpreter comes from config `shell`, else `$SHELL`, else the platform fallback (`/bin/zsh` on darwin). `shell` `create.before` fires immediately before the same call's permission requests, with the final `invocation.shell`. The dialect gate matches observations to calls by exact command text.
 - **Advisory hooks.** Guidance uses `session` `context`, which fires only for primary requests. Alerts clear on `permission.replied` from `ctx.event.subscribe` (envelope `{ type, data }`).
 - **Precedence.** Saved "always" grants (per project) and session permissions are merged after agent rules and bypass Sentinel.
-- **Reloading.** Local plugin sources are watched and reloaded on change. A reload starts with an empty correlation map, so in-flight calls ask.
+- **Reloading.** Local plugin sources are watched and reloaded on change. A reload starts with an empty correlation map, so in-flight calls ask, and re-runs plugin setup. Rebirth also occurs on 60-minute idle Location eviction, the 24-hour supervisor timer, config-source changes, and daemon restart. Baselines are not pinned (ADR-0007): trust follows the current `HEAD` at each decision, so a commit needs no reload. Only the `opencode serve --service` host loads the plugin — restarting a frontend (`opencode -c`, a desktop window) reloads nothing. To see what code the host is running, compare the audit log's `build` field with `git rev-parse --short HEAD` (plus `git status --porcelain -- src` for the `+dirty` suffix).
 
 Re-verify these assumptions whenever the supported engine range changes. The quickest end-to-end check is `opencode run --standalone` with `OPENCODE_CONFIG_DIR` pointing at a throwaway config that loads this checkout with `audit` enabled:
 

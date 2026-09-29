@@ -29,7 +29,7 @@ The following are accepted trust boundaries:
 
 - workspace containment is lexical; symlink-canonical containment is not modeled;
 - ambient `PATH` is not resolved to establish executable identity;
-- a workspace entry script is trusted only when its content matches the Git commit captured when the Sentinel context was created and remains unchanged in the index and worktree; later commits do not advance that baseline;
+- a workspace entry script or workflow control file is trusted only when it is committed at the current `HEAD` and unchanged in the index and worktree; trust follows the current commit (ADR-0007);
 - a recognized development workflow trusts only its direct declared control files, not hooks, transitive commands, build graphs, or runtime effects;
 - an approved `source` file may alter later shell interpretation; shell state is not simulated;
 - arbitrary environment semantics, network side effects, tool configuration, and concurrent changes between analysis and execution are not modeled;

@@ -67,7 +67,7 @@ describe("workspace script profile", () => {
     }
   });
 
-  it("does not let a later commit advance the session trust baseline", () => {
+  it("a commit during the session takes effect at the next decision (ADR-0007)", () => {
     const directory = mkdtempSync(path.join(os.tmpdir(), "sentinel-session-"));
     try {
       writeFileSync(path.join(directory, "check.sh"), "#!/bin/sh\ntrue\n");
@@ -102,13 +102,42 @@ describe("workspace script profile", () => {
       writeFileSync(path.join(directory, "check.sh"), changed);
       commit("changed during session");
 
+      // ADR-0007: nothing is pinned — the same context trusts the new HEAD.
       expect(analyzeWorkspacePolicy("./check.sh", sessionContext).action).toBe(
-        "ask",
+        "allow",
       );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("treats untracked and staged-new entry files as absent (ADR-0007)", () => {
+    const directory = mkdtempSync(path.join(os.tmpdir(), "sentinel-absent-"));
+    try {
+      writeFileSync(path.join(directory, "check.sh"), "#!/bin/sh\ntrue\n");
+      execFileSync("git", ["init", "-q", directory]);
+      execFileSync("git", ["-C", directory, "add", "check.sh"]);
+      execFileSync("git", [
+        "-C",
+        directory,
+        "-c",
+        "user.name=Sentinel Test",
+        "-c",
+        "user.email=sentinel@example.invalid",
+        "commit",
+        "-qm",
+        "baseline",
+      ]);
+      writeFileSync(path.join(directory, "fresh.sh"), "#!/bin/sh\ntrue\n");
       expect(
-        analyzeWorkspacePolicy("./check.sh", defaultWorkspaceContext(directory))
+        analyzeWorkspacePolicy("./fresh.sh", defaultWorkspaceContext(directory))
           .action,
-      ).toBe("allow");
+      ).toBe("ask");
+      execFileSync("git", ["-C", directory, "add", "fresh.sh"]);
+      expect(
+        analyzeWorkspacePolicy("./fresh.sh", defaultWorkspaceContext(directory))
+          .action,
+      ).toBe("ask");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
