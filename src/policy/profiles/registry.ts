@@ -21,6 +21,7 @@ import { recognizeNpx } from "./npx";
 import { recognizePip } from "./pip";
 import { recognizePlutil } from "./plutil";
 import { recognizePgrep } from "./pgrep";
+import { POPPLER_NAMES, recognizePoppler } from "./poppler";
 import { recognizeEcho, recognizePrintf } from "./printf";
 import { recognizeSed } from "./sed";
 import { recognizeSearch, SEARCH_NAMES } from "./search";
@@ -88,6 +89,7 @@ export function recognizeCommand(
   if (name === "plutil") return recognizePlutil(node, invocation);
   if (name === "mdfind") return recognizeMdfind(node, invocation);
   if (name === "pgrep") return recognizePgrep(node, invocation);
+  if (POPPLER_NAMES.has(name)) return recognizePoppler(node, invocation, name);
   if (name === "nc") return recognizeNc(node, invocation);
   if (name === "defaults") return recognizeDefaults(node, invocation);
   if (name === "textutil") return recognizeTextutil(node, invocation);

@@ -84,13 +84,27 @@ describe("filesystem reader profiles", () => {
     allow("cat ~/Library/Application\\ Support/*foo*.txt");
     allow("file ~/Library/Application\\ Support/*foo*");
     allow("cat my\\ dir/*.txt");
-    // Dynamic escapes and quoted globs stay fail-closed: `\$` and `\``
-    // flatten to text indistinguishable from genuinely dynamic material,
-    // and a quoted wildcard never expands at all.
+    // Quoted regions of ordinary text keep the literal-prefix bound the
+    // same way, spaces included (the `"/…Application Support"/*reecad*`
+    // shape); single and double quotes are equivalent here.
+    allow('ls -d "/work/project/My Docs"/*x*');
+    allow("ls -d '/work/project/My Docs'/*x*");
+    allow('cat "my dir"/*notes*.md');
+    allow('file "/work/project/My Docs"/x*y*.txt');
+    // Dynamic escapes and quoted glob material stay fail-closed: `\$` and
+    // `\`` flatten to text indistinguishable from genuinely dynamic
+    // material, and a quoted wildcard or quoted dynamic material never
+    // expands at all — quoting cannot launder it past the screen.
     ask("cat \\$HOME/*x*");
     ask(String.raw`cat \`whoami\`*x*`);
     ask('cat "my dir/*.txt"');
     ask("cat my\\ dir/*/../x");
+    ask('cat "$(pwd)"/*x*');
+    ask('cat "my $dir"/*x*');
+    ask('cat "my\\ dir"/*x*');
+    ask('ls -d "/work/project/My Docs"/..*/*x*');
+    ask('ls -d "/work/project/My Docs"/*/../x');
+    ask('ls -d "-x"a*');
     // Value-taking grammars keep literal-only arguments, because a cover
     // eaten as an option value would under-report reads.
     ask("head -n 5 *.ts");

@@ -235,4 +235,16 @@ describe("search profiles", () => {
     ask(String.raw`rg -n foo \$HOME/*x*`);
     ask('rg -n foo "my dir/*.txt"');
   });
+
+  it("accepts quoted-ordinary glob path operands", () => {
+    // Quoted literal prefix + unquoted wildcard — the same shared
+    // globReadTarget widening the readers use.
+    allow('rg -n foo "/work/project/My Docs"/*bar*.md');
+    allow("rg -n foo '/work/project/My Docs'/*bar*");
+    // A glob never stands in for the pattern, quoted or not.
+    ask('rg -n "My Docs"/*x*');
+    // Quoted wildcards and quoted dynamic material stay fail-closed.
+    ask('rg -n foo "/work/project/My Docs"/*ba*r/../..');
+    ask('rg -n foo "$(pwd)"/*x*');
+  });
 });

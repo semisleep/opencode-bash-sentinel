@@ -20,19 +20,26 @@ import type { Effect, UnitSeed, WorkspaceContext } from "../types";
 // bare filename glob; both classify like any other read operand.
 // Backslash-escaped ordinary characters — notably `\ ` in paths like
 // `~/Library/Application Support/` — are literal in bash and keep the
-// bound intact, so exactly those are unescaped before screening. Every
-// other backslash escape (`\$`, `` \` ``, `\"`, `\\`, …) flattens to text
-// indistinguishable from genuinely dynamic material and stays refused,
-// as do quoted regions (their quotes remain in `raw`, and a quoted glob
-// is not a glob at all — the shell passes the wildcard through literally).
+// bound intact, and so do quoted regions (`"…"`, `'…'`) of ordinary
+// text: `"~/Library/Application Support"/*` keeps the literal prefix and
+// is unquoted before screening. Every other backslash escape (`\$`,
+// `` \` ``, `\"`, `\\`, …) flattens to text indistinguishable from
+// genuinely dynamic material and stays refused, and a quoted region
+// carrying a wildcard, a backslash, or dynamic material refuses the word
+// with it: a quoted wildcard is literal text — not an expansion — so the
+// word is not a positively identified glob, and quoting cannot launder
+// `$VAR` or `$(…)` past the screen.
 export function globReadTarget(argument: string): string | undefined {
   let raw = argument;
-  if (raw.startsWith("-")) return;
   if (/[$`{}()\\'"\s;&|<>!^]/.test(raw)) {
-    const unescaped = unescapeEscapedOrdinary(raw);
-    if (unescaped === undefined) return;
-    raw = unescaped;
+    const unquoted = unquoteQuotedOrdinary(raw);
+    if (unquoted === undefined) return;
+    raw = unquoted;
   }
+  // The glob cover stands in for an operand, so a result that could begin
+  // with `-` (e.g. `"-x"a*`) must not ride into operand position as a
+  // runtime option either.
+  if (raw.startsWith("-")) return;
   const wildcard = raw.search(/[*?\[]/);
   if (wildcard < 0) return;
   if (raw.split("/").some(unboundedComponent)) return;
@@ -49,15 +56,36 @@ export function globReadTarget(argument: string): string | undefined {
   return raw.slice(0, slash + 1);
 }
 
-// Unescape `\c` for ordinary c only (letters, digits, punctuation that is
-// not shell-special here, and whitespace other than newline — `\ ` is the
-// whole point). Returns undefined when any remaining character is bare
-// dynamic material, when a backslash escapes a dynamic character, or when
-// the trailing `\` has nothing to escape.
-function unescapeEscapedOrdinary(raw: string): string | undefined {
+// Resolve shell quoting to the characters bash would pass the command:
+// `\c` for ordinary c only (letters, digits, punctuation that is not
+// shell-special here, and whitespace other than newline — `\ ` is the
+// whole point), and `"…"` / `'…'` regions whose content is ordinary
+// text, spaces included. Returns undefined when any remaining character
+// is bare dynamic material, when a backslash escapes a dynamic character,
+// when a quoted region carries anything but ordinary characters, or when
+// the trailing `\` has nothing to escape or a quote is left unclosed.
+function unquoteQuotedOrdinary(raw: string): string | undefined {
   let out = "";
+  let quote: '"' | "'" | undefined;
   for (let index = 0; index < raw.length; index++) {
     const character = raw[index]!;
+    if (quote) {
+      if (character === quote) {
+        quote = undefined;
+        continue;
+      }
+      // Ordinary characters only — space included (that is the point),
+      // but no wildcards (a quoted wildcard is literal text, not an
+      // expansion), no backslash, and no dynamic material.
+      if (/[$`{}()'"!^;&|<>*?[\]\\]/.test(character)) return;
+      if (/\s/.test(character) && character !== " ") return;
+      out += character;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
     if (character !== "\\") {
       if (/[$`{}()'"!^;&|<>\s]/.test(character)) return;
       out += character;
@@ -68,7 +96,7 @@ function unescapeEscapedOrdinary(raw: string): string | undefined {
     if (/[$`{}()\\'"!^;&|<>]/.test(next)) return;
     out += next;
   }
-  return out;
+  return quote === undefined ? out : undefined;
 }
 
 // True for a path component whose wildcard expansion can include `.` or
