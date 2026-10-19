@@ -23,6 +23,30 @@ describe("defaults profile", () => {
     );
   });
 
+  it("allows -currentHost scoped reads", () => {
+    allow("defaults -currentHost read com.apple.screensaver");
+    allow("defaults -currentHost read com.apple.screensaver idleTime");
+    allow("defaults -currentHost read-type com.apple.screensaver idleTime");
+    allow("defaults -currentHost domains");
+    allow(
+      "defaults -currentHost read /Applications/ChatGPT.app/Contents/Info.plist CFBundleIdentifier",
+    );
+  });
+
+  it("keeps -currentHost mutations and other scope flags out", () => {
+    ask("defaults -currentHost write com.apple.screensaver idleTime 60");
+    ask("defaults -currentHost delete com.apple.screensaver idleTime");
+    ask("defaults -currentHost rename com.apple.screensaver old new");
+    ask("defaults -currentHost import com.apple.screensaver file.plist");
+    ask("defaults -currentHost");
+    ask("defaults -currentHost read");
+    ask("defaults -currentHost -currentHost read com.apple.screensaver");
+    ask("defaults -host macmini read com.apple.screensaver");
+    ask("defaults -currentHost read a b c");
+    ask("defaults -currentHost read $DOMAIN");
+    ask("defaults -currentHost read com.apple.screensaver && rm -rf .git");
+  });
+
   it("asks for mutating verbs and malformed shapes", () => {
     ask("defaults write com.apple.finder Foo -bool true");
     ask("defaults delete com.apple.finder Foo");
