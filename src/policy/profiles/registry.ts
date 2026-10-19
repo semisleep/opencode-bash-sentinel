@@ -24,6 +24,7 @@ import { recognizeNpx } from "./npx";
 import { recognizeOpencode } from "./opencode";
 import { recognizePip } from "./pip";
 import { recognizePlutil } from "./plutil";
+import { recognizePmset } from "./pmset";
 import { recognizePgrep } from "./pgrep";
 import { POPPLER_NAMES, recognizePoppler } from "./poppler";
 import { recognizeEcho, recognizePrintf } from "./printf";
@@ -100,6 +101,7 @@ export function recognizeCommand(
   if (POPPLER_NAMES.has(name)) return recognizePoppler(node, invocation, name);
   if (name === "nc") return recognizeNc(node, invocation);
   if (name === "defaults") return recognizeDefaults(node, invocation);
+  if (name === "pmset") return recognizePmset(node, invocation);
   if (name === "textutil") return recognizeTextutil(node, invocation);
   if (name === "brew") return recognizeBrew(node, invocation);
   if (name === "find") return recognizeFind(node, invocation);
