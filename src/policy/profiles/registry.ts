@@ -32,6 +32,7 @@ import { recognizeSed } from "./sed";
 import { recognizeSearch, SEARCH_NAMES } from "./search";
 import { recognizeTextutil } from "./textutil";
 import { recognizeUniq } from "./uniq";
+import { recognizeUnzip } from "./unzip";
 import {
   INTERPRETER_NAMES,
   recognizeInterpreter,
@@ -103,6 +104,7 @@ export function recognizeCommand(
   if (name === "defaults") return recognizeDefaults(node, invocation);
   if (name === "pmset") return recognizePmset(node, invocation);
   if (name === "textutil") return recognizeTextutil(node, invocation);
+  if (name === "unzip") return recognizeUnzip(node, invocation);
   if (name === "brew") return recognizeBrew(node, invocation);
   if (name === "find") return recognizeFind(node, invocation);
   if (name === "dd") return recognizeDd(node, invocation);

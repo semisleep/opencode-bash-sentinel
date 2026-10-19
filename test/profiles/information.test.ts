@@ -47,6 +47,34 @@ describe("information profiles", () => {
       allow(source);
   });
 
+  it("allows sw_vers and system_profiler report forms", () => {
+    allow("sw_vers");
+    allow("sw_vers -productName");
+    allow("sw_vers -productVersion");
+    allow("sw_vers -buildVersion");
+    allow("sw_vers -productName -buildVersion");
+    allow("system_profiler");
+    allow("system_profiler SPBluetoothDataType");
+    allow("system_profiler SPHardwareDataType SPSoftwareDataType");
+    allow("system_profiler -detailLevel mini");
+    allow("system_profiler -detailLevel basic SPHardwareDataType");
+    allow("system_profiler -detailLevel full SPHardwareDataType SPDisplaysDataType");
+    allow("system_profiler SPBluetoothDataType 2>/dev/null | grep -i keyboard");
+  });
+
+  it("asks for unknown sw_vers/system_profiler shapes", () => {
+    ask("sw_vers -foo");
+    ask("sw_vers extra");
+    ask("sw_vers --productName");
+    ask("system_profiler -json SPHardwareDataType");
+    ask("system_profiler -detailLevel huge SPHardwareDataType");
+    ask("system_profiler -detailLevel");
+    ask("system_profiler SPHardwareDataType extra");
+    ask("system_profiler -timeout 30 SPHardwareDataType");
+    ask("system_profiler SPHardwareDataType; git push");
+    ask("sw_vers $FLAG");
+  });
+
   it("supports ps output-format and pid selectors", () => {
     allow("ps -o pid,ppid,lstart,etime,command -p 96906");
     allow("ps -p 1");

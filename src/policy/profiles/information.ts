@@ -17,6 +17,14 @@ const INFORMATION_FORMS: Record<string, RegExp> = {
   false: /^$/,
   ":": /^$/,
   sleep: /^ \d+(?:\.\d+)?$/,
+  // sw_vers prints macOS product/build identity; every spelling is
+  // display-only and composable. No long forms exist.
+  sw_vers: /^(?: -(?:productName|productVersion|buildVersion))*$/,
+  // system_profiler reports hardware/software configuration and has no
+  // mutating mode: bare (full dump), literal SP-prefixed datatypes, and
+  // one -detailLevel selector with a closed value set. Other flags
+  // (-json, -timeout, -usage) stay unrecognized until pinned.
+  system_profiler: /^(?: -detailLevel (?:mini|basic|full))?(?: SP[A-Za-z0-9]+)*$/,
 };
 
 export const informationNames = new Set(Object.keys(INFORMATION_FORMS));
