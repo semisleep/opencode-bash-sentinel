@@ -69,4 +69,38 @@ describe("Node workflow profile", () => {
     ask("npm ls typescript && rm -rf .git");
     ask("npm ls $PKG");
   });
+
+  it("allows read-only audit reports without the workflow baseline", () => {
+    allow("npm audit");
+    allow("npm audit --json");
+    allow("npm audit signatures");
+    allow("npm audit signatures --json");
+    allow("npm audit --audit-level=high --omit=dev --package-lock-only");
+    allow("pnpm audit --json");
+    allow("yarn audit");
+    allow("yarn npm audit --json");
+    allow("bun audit");
+    allow("npm audit", { "package.json": "dirty" });
+  });
+
+  it("asks for audit fix, unmodeled flags, and dynamic audit forms", () => {
+    ask("npm audit fix");
+    ask("npm audit fix --dry-run");
+    ask("npm audit --dry-run");
+    ask("npm audit -f");
+    ask("npm audit --force");
+    ask("npm audit fix signatures");
+    ask("pnpm audit fix");
+    ask("yarn audit fix");
+    ask("yarn npm audit fix");
+    // Separate value forms stay out so a value can never swallow an operand.
+    ask("npm audit --audit-level high");
+    ask("npm audit --omit dev");
+    ask("npm audit --omit");
+    // Unmodeled report options.
+    ask("npm audit --registry=https://example.test");
+    ask("npm audit -w app");
+    ask("npm audit $FLAGS");
+    ask("npm audit && rm -rf .git");
+  });
 });

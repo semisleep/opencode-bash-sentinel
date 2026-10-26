@@ -24,6 +24,8 @@ export const recognizeNodeWorkflow: CommandProfile = (
       name,
     );
     if (listing) return listing;
+    const audit = recognizeAuditReport(node, args as string[], name);
+    if (audit) return audit;
   }
   let shape =
     withinWorkspace(cwd, ctx.workspace) &&
@@ -91,4 +93,45 @@ function validTail(
         .slice(1)
         .every((argument) => !unsafeVisibleArgument(argument, ctx, cwd)))
   );
+}
+
+// `npm audit` (the bare report and npm's `signatures` verification)
+// queries the registry advisory database and prints findings without
+// touching files or running lifecycle scripts — the same pure-information
+// class as `ls`/`list`, with no workflow baseline gate. The mutating
+// `audit fix` (rewrites package-lock, installs packages, runs scripts),
+// its `--dry-run`/`--force` companions, and every unmodeled flag stay
+// fail-closed. Value options are attached-form-only with closed enums,
+// so a separate value can never swallow a following operand. Sibling
+// package managers share the report shape (`pnpm audit`, `yarn audit`,
+// yarn-berry's `yarn npm audit`, `bun audit`) and the same flag set.
+function recognizeAuditReport(
+  node: SyntaxNode,
+  args: string[],
+  name: string,
+): UnitSeed | undefined {
+  let rest: string[];
+  if (name === "yarn") {
+    if (args[0] === "npm" && args[1] === "audit") rest = args.slice(2);
+    else if (args[0] === "audit") rest = args.slice(1);
+    else return undefined;
+  } else {
+    if (args[0] !== "audit") return undefined;
+    rest = args.slice(1);
+  }
+  if (name === "npm" && rest[0] === "signatures") rest = rest.slice(1);
+  for (const value of rest) {
+    if (value === "--json" || value === "--package-lock-only") continue;
+    if (/^--audit-level=(info|low|moderate|high|critical|none)$/.test(value))
+      continue;
+    if (/^--omit=(dev|optional|peer)$/.test(value)) continue;
+    return unsupported(node, `unsupported ${name} audit form`);
+  }
+  return {
+    kind: "command",
+    text: node.text,
+    situation: "workspace-neutral-or-indeterminate",
+    allowed: true,
+    reason: `${name} audit report`,
+  };
 }

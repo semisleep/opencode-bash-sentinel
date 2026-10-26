@@ -30,6 +30,7 @@ import { POPPLER_NAMES, recognizePoppler } from "./poppler";
 import { recognizeEcho, recognizePrintf } from "./printf";
 import { recognizeSed } from "./sed";
 import { recognizeSearch, SEARCH_NAMES } from "./search";
+import { recognizeSips } from "./sips";
 import { recognizeTextutil } from "./textutil";
 import { recognizeUniq } from "./uniq";
 import { recognizeUnzip } from "./unzip";
@@ -105,6 +106,7 @@ export function recognizeCommand(
   if (name === "pmset") return recognizePmset(node, invocation);
   if (name === "textutil") return recognizeTextutil(node, invocation);
   if (name === "unzip") return recognizeUnzip(node, invocation);
+  if (name === "sips") return recognizeSips(node, invocation);
   if (name === "brew") return recognizeBrew(node, invocation);
   if (name === "find") return recognizeFind(node, invocation);
   if (name === "dd") return recognizeDd(node, invocation);
